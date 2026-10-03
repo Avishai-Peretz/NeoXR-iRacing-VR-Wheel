@@ -23,7 +23,7 @@
 namespace {
 HMODULE module=nullptr;std::wstring folder;std::recursive_mutex lock;
 PFN_xrGetInstanceProcAddr nextGipa=nullptr;XrInstance instance=XR_NULL_HANDLE;
-#define FN_LIST(X) X(CreateSession) X(DestroySession) X(DestroyInstance) X(EndFrame) X(WaitFrame) X(BeginSession) X(EnumerateSwapchainFormats) X(CreateSwapchain) X(DestroySwapchain) X(EnumerateSwapchainImages) X(AcquireSwapchainImage) X(WaitSwapchainImage) X(ReleaseSwapchainImage) X(CreateReferenceSpace) X(DestroySpace) X(LocateViews) X(GetSystemProperties)
+#define FN_LIST(X) X(CreateSession) X(DestroySession) X(DestroyInstance) X(EndFrame) X(WaitFrame) X(BeginSession) X(EnumerateSwapchainFormats) X(CreateSwapchain) X(DestroySwapchain) X(EnumerateSwapchainImages) X(AcquireSwapchainImage) X(WaitSwapchainImage) X(ReleaseSwapchainImage) X(CreateReferenceSpace) X(DestroySpace) X(LocateSpace) X(LocateViews) X(GetSystemProperties)
 #define DECL(n) PFN_xr##n next##n=nullptr;
 FN_LIST(DECL)
 void log(const char* s){OutputDebugStringA((std::string("NeoXR: ")+s+"\n").c_str());
@@ -36,8 +36,9 @@ void check(XrResult r){if(XR_FAILED(r))throw std::runtime_error("OpenXR operatio
 struct Eye {XrSwapchain chain=XR_NULL_HANDLE;std::vector<XrSwapchainImageD3D11KHR> images;};
 struct State {
  // gameSpace is the space of the game's own projection layer; the wheel is anchored and composited in it
- // so that game or runtime recentering moves the wheel together with the cockpit.
- XrSession session=XR_NULL_HANDLE;XrSpace gameSpace=XR_NULL_HANDLE;std::array<Eye,2> eyes;
+ // so that game or runtime recentering moves the wheel together with the cockpit. gameSpace may be
+ // arbitrarily rotated (iRacing uses STAGE rolled 180 degrees); levelSpace is our gravity-aligned reference.
+ XrSession session=XR_NULL_HANDLE;XrSpace gameSpace=XR_NULL_HANDLE,levelSpace=XR_NULL_HANDLE;std::array<Eye,2> eyes;
  Renderer renderer;WheelInput input,buttons;bool separateButtons=false,ready=false,visible=true;
  bool shouldRender=false,stereo=false,anchored=false,saved=false;bool prevF8=false,prevF9=false,prevCloser=false,prevFarther=false,prevTiltUp=false,prevTiltDown=false;
  int recenterKey=0,recenterButton=-1;bool prevRecenterKey=false,prevRecenterButton=false;
@@ -48,13 +49,18 @@ struct State {
  int knobMap[4][2]={{8,9},{10,11},{36,37},{38,39}},stickMap[2][5]={},stickPov[2]={-1,-1};bool prevKnob[4][2]={};
  int clutchAxis[2]={-1,-1};float clutchRest[2]={-10000,-10000},clutchFull[2]={10000,10000};
  neo::Animator animator;ClickSound click;float knobStep=.26f;LARGE_INTEGER lastFrame{};
- ~State(){for(auto& e:eyes)if(e.chain)nextDestroySwapchain(e.chain);}
+ ~State(){for(auto& e:eyes)if(e.chain)nextDestroySwapchain(e.chain);if(levelSpace)nextDestroySpace(levelSpace);}
 };
 std::unique_ptr<State> state;bool target=false;
 XMMATRIX pose(XrPosef p){return XMMatrixRotationQuaternion(XMVectorSet(p.orientation.x,p.orientation.y,p.orientation.z,p.orientation.w))*
  XMMatrixTranslation(p.position.x,p.position.y,p.position.z);}
-// Calibration keeps only the head's heading, so looking down while recentering does not tilt the wheel.
-XMMATRIX level(float x,float y,float z,float yaw){return XMMatrixRotationY(yaw)*XMMatrixTranslation(x,y,z);}
+// Keeps only the head's heading about gravity (levelSpace +Y), so looking down while recentering does not
+// tilt the wheel. head is in gameSpace; toGame maps levelSpace into gameSpace.
+XMMATRIX level(FXMMATRIX head,CXMMATRIX toGame){
+ auto h=head*XMMatrixInverse(nullptr,toGame);XMFLOAT4X4 m;XMStoreFloat4x4(&m,h);
+ // Row-vector convention: row 2 is the head's +Z (backward) axis.
+ float yaw=std::atan2(m._31,m._33);return XMMatrixRotationY(yaw)*XMMatrixTranslation(m._41,m._42,m._43)*toGame;
+}
 // Accepts F1-F24, a single letter or digit, or a decimal virtual-key code. Empty or 0 disables.
 int keyCode(const wchar_t* text){
  if(!text[0])return 0;if((text[0]==L'F'||text[0]==L'f')&&text[1]){int n=_wtoi(text+1);if(n>=1&&n<=24)return VK_F1+n-1;}
@@ -115,9 +121,14 @@ void initialize(State& s,const XrSessionCreateInfo* info){
  s.click.init(std::clamp(real(L"ClickVolume",.5f),0.f,1.f),soundFile);
  wchar_t text[80]={};GetPrivateProfileStringW(L"Wheel",L"RecenterKey",L"",text,80,ini().c_str());s.recenterKey=keyCode(text);
  s.recenterButton=number(L"RecenterButton",-1);
- GetPrivateProfileStringW(L"Wheel",L"Calibration",L"",text,80,ini().c_str());float c[4];
- if(swscanf_s(text,L"%f,%f,%f,%f",c,c+1,c+2,c+3)==4&&std::isfinite(c[0]+c[1]+c[2]+c[3])){
-  XMStoreFloat4x4(&s.head,level(c[0],c[1],c[2],c[3]));s.saved=s.anchored=true;log("Saved calibration loaded");}
+ XrReferenceSpaceCreateInfo rs{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};rs.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_LOCAL;
+ rs.poseInReferenceSpace.orientation.w=1;check(nextCreateReferenceSpace(s.session,&rs,&s.levelSpace));
+ // Calibration=x,y,z,qx,qy,qz,qw: the levelled head pose in the game's tracking space.
+ GetPrivateProfileStringW(L"Wheel",L"Calibration",L"",text,80,ini().c_str());XrPosef c{};
+ float* v[]={&c.position.x,&c.position.y,&c.position.z,&c.orientation.x,&c.orientation.y,&c.orientation.z,&c.orientation.w};
+ if(swscanf_s(text,L"%f,%f,%f,%f,%f,%f,%f",v[0],v[1],v[2],v[3],v[4],v[5],v[6])==7){
+  float sum=0,n=0;for(int i=0;i<7;i++)sum+=*v[i];for(int i=3;i<7;i++)n+=*v[i]* *v[i];
+  if(std::isfinite(sum)&&std::abs(n-1)<.01f){XMStoreFloat4x4(&s.head,pose(c));s.saved=s.anchored=true;log("Saved calibration loaded");}}
  s.ready=true;log("D3D11 stereo renderer and input initialized; F8 calibrates, F9 toggles");
 }
 XrResult XRAPI_CALL createSession(XrInstance i,const XrSessionCreateInfo* ci,XrSession* out){
@@ -162,12 +173,15 @@ XrResult XRAPI_CALL endFrame(XrSession session,const XrFrameEndInfo* f){
   check(nextLocateViews(session,&li,&vs,2,&count,views.data()));
   auto required=XR_VIEW_STATE_ORIENTATION_VALID_BIT|XR_VIEW_STATE_POSITION_VALID_BIT;
   if(count!=2||(vs.viewStateFlags&required)!=required)return nextEndFrame(session,f);
-  if(!s.anchored||recenter){const auto& a=views[0].pose;const auto& b=views[1].pose;const auto& q=a.orientation;
-   float x=(a.position.x+b.position.x)/2,y=(a.position.y+b.position.y)/2,z=(a.position.z+b.position.z)/2;
-   float yaw=std::atan2(2*(q.x*q.z+q.w*q.y),1-2*(q.x*q.x+q.y*q.y));
-   XMStoreFloat4x4(&s.head,level(x,y,z,yaw));s.anchored=true;
+  if(!s.anchored||recenter){auto p=views[0].pose;const auto& b=views[1].pose.position;
+   p.position={(p.position.x+b.x)/2,(p.position.y+b.y)/2,(p.position.z+b.z)/2};
+   XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};auto valid=XR_SPACE_LOCATION_ORIENTATION_VALID_BIT|XR_SPACE_LOCATION_POSITION_VALID_BIT;
+   auto head=pose(p);
+   if(XR_SUCCEEDED(nextLocateSpace(s.levelSpace,space,f->displayTime,&loc))&&(loc.locationFlags&valid)==valid)head=level(head,pose(loc.pose));
+   XMStoreFloat4x4(&s.head,head);s.anchored=true;
    // Only an explicit recenter is saved; the automatic first-frame placement is not.
-   if(recenter){wchar_t value[80];swprintf_s(value,L"%.4f,%.4f,%.4f,%.4f",x,y,z,yaw);
+   if(recenter){XMVECTOR scale,q,t;XMMatrixDecompose(&scale,&q,&t,head);XMFLOAT4 qf;XMFLOAT3 tf;XMStoreFloat4(&qf,q);XMStoreFloat3(&tf,t);
+    wchar_t value[80];swprintf_s(value,L"%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.5f",tf.x,tf.y,tf.z,qf.x,qf.y,qf.z,qf.w);
     WritePrivateProfileStringW(L"Wheel",L"Calibration",value,ini().c_str());s.saved=true;log("Calibration saved");}}
   XMStoreFloat4x4(&s.anchor,XMMatrixRotationX(s.tilt*neo::pi/180)*XMMatrixTranslation(s.px,s.py,s.pz)*XMLoadFloat4x4(&s.head));
   auto model=XMMatrixScaling(s.wheelWidth/s.renderer.modelWidth,s.wheelWidth/s.renderer.modelWidth,s.wheelWidth/s.renderer.modelWidth)*
