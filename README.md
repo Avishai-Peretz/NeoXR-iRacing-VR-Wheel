@@ -39,13 +39,16 @@ To return to the original hardcoded visual, set `Model=placeholder` and restart 
 The runtime asset has 23 separate parts, 206,786 triangles, and baked base-color, normal and metallic/roughness texture atlases. All steering geometry rotates together. The loader measures the transformed mesh's actual X extent, then scales it to your configured WidthMm. The prepared model is upright with the front facing positive Z.
 
 - `Button0` through `Button7` now map to the model objects named **B1_push_btn through B8_push_btn**, respectively. In placeholder mode they retain the original visual order. These are zero-based DirectInput indices, not an assumption about SIMAGIC numbering. Verify each with NeoXR-Input.exe on the hub device.
-- A pressed button moves inward and highlights; independent model LED colors come from the baked materials. This does not synchronize physical hardware LEDs or SimPro RGB settings.
+- Every control has click feedback: a springy press animation, a short highlight flash (`FlashStrength`) and a synthesized click through the Windows default audio device (`ClickVolume`, or your own WAV via `ClickSoundFile`). Knob detents tick, buttons click and paddles clack.
+- The rotary knobs turn one `KnobStepDegrees` per detent. The round B37/B38 and B39/B40 knobs turn freely; the B9/B10 and B11/B12 thumb rollers nudge and settle back because only their front arc is modeled. Defaults assume B9 is DirectInput button 8, and so on; set the `...KnobCW/CCW` keys and swap them if a knob turns backwards.
+- The joysticks tilt by `StickAngleDegrees` and depress on push. Map them with `LeftStickUp/Down/Left/Right/Push` (and `RightStick...`) or, if they report as a hat switch, `LeftStickPOV`/`RightStickPOV`. NeoXR-Input.exe now also prints hat positions.
+- Pressed buttons stay lightly highlighted; independent model LED colors come from the baked materials. This does not synchronize physical hardware LEDs or SimPro RGB settings.
 - LeftPaddleButton and RightPaddleButton animate the named left/right shifters. Set each to its zero-based DirectInput index on ButtonDevice. -1 disables that motion.
 - LeftClutchButton and RightClutchButton provide the same optional digital animation for clutch levers. Analog clutch travel is not implemented.
 - Paddle hinge locations are approximated from the parts' inner edges, and require visual calibration for exact motion. PaddleAngleDegrees=0 disables all paddle movement. The converter stores pivots in the binary asset; wheel-parts.json documents them.
 - Brightness controls the custom model's output. The renderer uses fixed studio lighting, not iRacing's cockpit lights. Procedural red paint was approximated during GLB export. The result will differ from the Blender preview's lighting.
 
-The original source's two detached pieces are excluded. Exact body-label texture changes, encoder rotation, RPM telemetry and virtual hands are not added in this release.
+The original source's two detached pieces are excluded. Exact body-label texture changes, RPM telemetry and virtual hands are not added in this release.
 
 ## Model pipeline
 
