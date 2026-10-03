@@ -25,7 +25,7 @@ struct Renderer {
  static_assert(sizeof(Uniform)==960,"HLSL constant buffer layout must match");
  std::array<std::array<float,4>,neo::controlCount> pivots{},axes{};
  UINT count=0,stride=0;bool detailed=false;float modelWidth=.310f;
- float buttonTravel=.0012f,paddleAngle=.12f,clutchAngle=.21f,stickAngle=.2f,flashStrength=.75f;
+ float buttonTravel=.0012f,paddleAngle=.12f,clutchAngle=.21f,stickAngle=.2f,flashStrength=.75f;int editMode=0;
  void execute(){ComPtr<ID3D11CommandList> commands;HRESULT result=context->FinishCommandList(FALSE,&commands);
   if(FAILED(result))throw std::runtime_error("FinishCommandList failed, HRESULT="+std::to_string(static_cast<unsigned long>(result)));
   immediate->ExecuteCommandList(commands.Get(),TRUE);}
@@ -55,7 +55,7 @@ struct Renderer {
   )";
   const char* custom=R"(
    // controls[c]: x=press spring, y=flash, z=paddle travel angle, knob angle or stick X tilt, w=stick Y tilt.
-   // motion: x=button travel, z=brightness, w=flash strength. camera.w=stick angle.
+   // motion: x=button travel, y=edit mode, z=brightness, w=flash strength. camera.w=stick angle.
    cbuffer C:register(b0){row_major float4x4 mvp;float4 controls[18];float4 pivots[18];float4 axes[18];float4 camera;float4 motion;};
    Texture2D baseTex:register(t0);Texture2D normalTex:register(t1);Texture2D ormTex:register(t2);SamplerState sampleTex:register(s0);
    struct V{float3 p:POSITION;float3 n:NORMAL;float2 uv:TEXCOORD0;float3 base:COLOR0;float3 emission:COLOR1;float2 factors:TEXCOORD1;float control:TEXCOORD2;};
@@ -84,7 +84,11 @@ struct Renderer {
     float exponent=lerp(160,3,rough*rough);float spec=pow(saturate(dot(n,halfV)),exponent)*(1-rough*.7);
     float3 f0=lerp(float3(.04,.04,.04),color,metal);float3 lit=color*(.30+(1-metal*.75)*diffuse*.75)+f0*(.10+spec*1.8);
     // Fixed studio lighting; game cockpit lights are not available to an OpenXR composition layer.
-    float3 result=lit+p.emission;result=lerp(result,float3(1,1,1),p.glow);return float4(result*motion.z,1);}
+    float3 result=lit+p.emission;result=lerp(result,float3(1,1,1),p.glow);result*=motion.z;
+    // Edit mode outline: blue = move, orange = adjust, green = confirm save.
+    if(motion.y>0){float3 tint=motion.y<1.5?float3(.1,.45,1):motion.y<2.5?float3(1,.45,.05):float3(.15,1,.3);
+     float rim=pow(1-saturate(abs(dot(normalize(p.n),view))),2);result=lerp(result,tint,saturate(.15+rim*.85));}
+    return float4(result,1);}
   )";
   const char* shader=detailed?custom:placeholder;ComPtr<ID3DBlob> v,p,e;
   auto compile=[&](const char* entry,const char* profile,ComPtr<ID3DBlob>& result){HRESULT h=D3DCompile(shader,strlen(shader),nullptr,nullptr,nullptr,entry,profile,0,0,&result,&e);
@@ -141,7 +145,7 @@ struct Renderer {
   context->VSSetShader(vs.Get(),nullptr,0);context->PSSetShader(ps.Get(),nullptr,0);
   Uniform u{};XMStoreFloat4x4(&u.mvp,mvp);
   for(int i=0;i<neo::controlCount;i++){const auto& c=controls[i];u.controls[i]={c.press,c.flash,i<8||i>=12?c.a:i<10?paddleAngle:clutchAngle,c.b};u.pivots[i]={pivots[i][0],pivots[i][1],pivots[i][2],pivots[i][3]};u.axes[i]={axes[i][0],axes[i][1],axes[i][2],0};}
-  u.camera={cameraLocal.x,cameraLocal.y,cameraLocal.z,stickAngle};u.motion={buttonTravel,paddleAngle,brightness,flashStrength};
+  u.camera={cameraLocal.x,cameraLocal.y,cameraLocal.z,stickAngle};u.motion={buttonTravel,float(editMode),brightness,flashStrength};
   context->UpdateSubresource(constants.Get(),0,nullptr,&u,0,0);auto* cb=constants.Get();context->VSSetConstantBuffers(0,1,&cb);context->PSSetConstantBuffers(0,1,&cb);
   if(detailed){ID3D11ShaderResourceView* tex[]={base.Get(),normal.Get(),orm.Get()};context->PSSetShaderResources(0,3,tex);auto* sam=sampler.Get();context->PSSetSamplers(0,1,&sam);context->IASetIndexBuffer(indices.Get(),DXGI_FORMAT_R32_UINT,0);context->DrawIndexed(count,0,0);}
   else context->Draw(count,0);execute();

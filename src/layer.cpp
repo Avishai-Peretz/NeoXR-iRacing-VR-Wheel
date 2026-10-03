@@ -19,6 +19,7 @@
 #include "input.hpp"
 #include "render.hpp"
 #include "click.hpp"
+#include "edit.hpp"
 // Single-instance/session proof of concept. Other sessions are passed through.
 namespace {
 HMODULE module=nullptr;std::wstring folder;std::recursive_mutex lock;
@@ -43,7 +44,8 @@ struct State {
  bool shouldRender=false,stereo=false,anchored=false,saved=false;bool prevF8=false,prevF9=false,prevCloser=false,prevFarther=false,prevTiltUp=false,prevTiltDown=false;
  int recenterKey=0,recenterButton=-1;bool prevRecenterKey=false,prevRecenterButton=false;
  UINT width=1024,height=1024;uint32_t maxLayers=0;
- XMFLOAT4X4 head{},anchor{};float wheelWidth=.31f,rotation=900,tilt=0,px=0,py=-.3f,pz=-.5f;
+ XMFLOAT4X4 head{},anchor{};float wheelWidth=.31f,rotation=900,tilt=0,yaw=0,px=0,py=-.3f,pz=-.5f;
+ EditMode edit;int prevEdit=EditMode::Off;float sensitivity=1;std::array<float,6> before{};
  int axis=0;bool invert=false;int buttonMap[12]={0,1,2,3,4,5,6,7,-1,-1,-1,-1};float brightness=.8f;
  // knobMap[k]={clockwise,counter-clockwise}; stickMap[j]={up,down,left,right,push}.
  int knobMap[4][2]={{8,9},{10,11},{36,37},{38,39}},stickMap[2][5]={},stickPov[2]={-1,-1};bool prevKnob[4][2]={};
@@ -61,9 +63,12 @@ XMMATRIX level(FXMMATRIX head,CXMMATRIX toGame){
  // Row-vector convention: row 2 is the head's +Z (backward) axis.
  float yaw=std::atan2(m._31,m._33);return XMMatrixRotationY(yaw)*XMMatrixTranslation(m._41,m._42,m._43)*toGame;
 }
-// Accepts F1-F24, a single letter or digit, or a decimal virtual-key code. Empty or 0 disables.
+// Accepts F1-F24, a key name below, a single letter or digit, or a decimal virtual-key code. Empty or 0 disables.
 int keyCode(const wchar_t* text){
- if(!text[0])return 0;if((text[0]==L'F'||text[0]==L'f')&&text[1]){int n=_wtoi(text+1);if(n>=1&&n<=24)return VK_F1+n-1;}
+ if(!text[0])return 0;
+ struct Name {const wchar_t* name;int key;} names[]={{L"Tab",VK_TAB},{L"Insert",VK_INSERT},{L"Delete",VK_DELETE},{L"Home",VK_HOME},
+  {L"End",VK_END},{L"Pause",VK_PAUSE},{L"ScrollLock",VK_SCROLL},{L"Backspace",VK_BACK}};
+ for(const auto& n:names)if(_wcsicmp(text,n.name)==0)return n.key;if((text[0]==L'F'||text[0]==L'f')&&text[1]){int n=_wtoi(text+1);if(n>=1&&n<=24)return VK_F1+n-1;}
  if(!text[1]&&iswalnum(text[0]))return towupper(text[0]);return _wtoi(text);
 }
 void initialize(State& s,const XrSessionCreateInfo* info){
@@ -94,7 +99,7 @@ void initialize(State& s,const XrSessionCreateInfo* info){
  s.brightness=std::clamp(real(L"Brightness",.8f),.1f,2.f);
  log(s.renderer.detailed?"Custom wheel loaded: 23 parts with baked material textures":"Procedural placeholder selected");
  s.wheelWidth=std::clamp(real(L"WidthMm",310),100.f,600.f)/1000.f;s.rotation=std::clamp(real(L"RotationDegrees",900),90.f,2520.f);
- s.tilt=std::clamp(real(L"TiltDegrees",0),-60.f,60.f);s.px=real(L"X",0);s.py=real(L"Y",-.3f);s.pz=real(L"Z",-.5f);
+ s.tilt=std::clamp(real(L"TiltDegrees",0),-90.f,90.f);s.yaw=std::clamp(real(L"YawDegrees",0),-90.f,90.f);s.px=real(L"X",0);s.py=real(L"Y",-.3f);s.pz=real(L"Z",-.5f);
  s.axis=number(L"SteeringAxis",0);s.invert=number(L"Invert",0)!=0;
  if(!s.input.open(number(L"SteeringDevice",-1)))throw std::runtime_error("Configure SteeringDevice using NeoXR-Input first");
  int buttonDevice=number(L"ButtonDevice",-1);s.separateButtons=buttonDevice>=0;
@@ -129,7 +134,9 @@ void initialize(State& s,const XrSessionCreateInfo* info){
  if(swscanf_s(text,L"%f,%f,%f,%f,%f,%f,%f",v[0],v[1],v[2],v[3],v[4],v[5],v[6])==7){
   float sum=0,n=0;for(int i=0;i<7;i++)sum+=*v[i];for(int i=3;i<7;i++)n+=*v[i]* *v[i];
   if(std::isfinite(sum)&&std::abs(n-1)<.01f){XMStoreFloat4x4(&s.head,pose(c));s.saved=s.anchored=true;log("Saved calibration loaded");}}
- s.ready=true;log("D3D11 stereo renderer and input initialized; F8 calibrates, F9 toggles");
+ GetPrivateProfileStringW(L"Wheel",L"EditKey",L"Tab",text,80,ini().c_str());int editKey=keyCode(text);
+ s.sensitivity=std::clamp(real(L"EditSensitivity",1),.1f,10.f);if(editKey)s.edit.start(module,editKey);
+ s.ready=true;log("D3D11 stereo renderer and input initialized; F8 calibrates, F9 toggles, EditKey places the wheel with the mouse");
 }
 XrResult XRAPI_CALL createSession(XrInstance i,const XrSessionCreateInfo* ci,XrSession* out){
  std::lock_guard<std::recursive_mutex> guard(lock);XrResult result=nextCreateSession(i,ci,out);
@@ -162,7 +169,21 @@ XrResult XRAPI_CALL endFrame(XrSession session,const XrFrameEndInfo* f){
  bool closer=tap(VK_DOWN,s.prevCloser),farther=tap(VK_UP,s.prevFarther);
  if(closer||farther){s.pz=std::clamp(s.pz+(closer?.01f:-.01f),-1.5f,-.1f);save(L"Z",L"%.2f",s.pz);}
  bool tiltUp=tap(VK_PRIOR,s.prevTiltUp),tiltDown=tap(VK_NEXT,s.prevTiltDown);
- if(tiltUp||tiltDown){s.tilt=std::clamp(s.tilt+(tiltUp?1.f:-1.f),-60.f,60.f);save(L"TiltDegrees",L"%.0f",s.tilt);}
+ if(tiltUp||tiltDown){s.tilt=std::clamp(s.tilt+(tiltUp?1.f:-1.f),-90.f,90.f);save(L"TiltDegrees",L"%.0f",s.tilt);}
+ {int mode=s.edit.mode;std::array<float,6> now={s.px,s.py,s.pz,s.tilt,s.yaw,s.wheelWidth};
+  if(mode!=EditMode::Off&&s.prevEdit==EditMode::Off){s.before=now;log("Edit mode: left-drag moves, right-drag sets distance, M switches to size/rotate, Esc then Enter saves");}
+  float lx=float(s.edit.leftX.exchange(0)),ly=float(s.edit.leftY.exchange(0)),rx=float(s.edit.rightX.exchange(0)),ry=float(s.edit.rightY.exchange(0));
+  float wheel=float(s.edit.scroll.exchange(0))/WHEEL_DELTA,k=s.sensitivity;
+  if(mode==EditMode::Move){s.px=std::clamp(s.px+lx*.0005f*k,-1.f,1.f);s.py=std::clamp(s.py-ly*.0005f*k,-1.5f,1.f);
+   s.pz=std::clamp(s.pz+ry*.0005f*k-wheel*.01f,-1.5f,-.1f);}
+  else if(mode==EditMode::Adjust){s.wheelWidth=std::clamp(s.wheelWidth+(lx-ly)*.0002f*k+wheel*.005f,.1f,.6f);
+   s.tilt=std::clamp(s.tilt-ry*.1f*k,-90.f,90.f);s.yaw=std::clamp(s.yaw+rx*.1f*k,-90.f,90.f);}
+  switch(s.edit.result.exchange(EditMode::None)){
+   case EditMode::Save:save(L"X",L"%.3f",s.px);save(L"Y",L"%.3f",s.py);save(L"Z",L"%.3f",s.pz);save(L"TiltDegrees",L"%.1f",s.tilt);
+    save(L"YawDegrees",L"%.1f",s.yaw);save(L"WidthMm",L"%.0f",s.wheelWidth*1000);log("Edit mode: placement saved");break;
+   case EditMode::Cancel:s.px=s.before[0];s.py=s.before[1];s.pz=s.before[2];s.tilt=s.before[3];s.yaw=s.before[4];s.wheelWidth=s.before[5];
+    log("Edit mode: cancelled, placement restored");break;}
+  s.prevEdit=mode;s.renderer.editMode=mode;}
  if(!s.visible)return nextEndFrame(session,f);
  try{
   if(!s.input.poll())return nextEndFrame(session,f);if(s.separateButtons)s.buttons.poll();
@@ -183,7 +204,7 @@ XrResult XRAPI_CALL endFrame(XrSession session,const XrFrameEndInfo* f){
    if(recenter){XMVECTOR scale,q,t;XMMatrixDecompose(&scale,&q,&t,head);XMFLOAT4 qf;XMFLOAT3 tf;XMStoreFloat4(&qf,q);XMStoreFloat3(&tf,t);
     wchar_t value[80];swprintf_s(value,L"%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.5f",tf.x,tf.y,tf.z,qf.x,qf.y,qf.z,qf.w);
     WritePrivateProfileStringW(L"Wheel",L"Calibration",value,ini().c_str());s.saved=true;log("Calibration saved");}}
-  XMStoreFloat4x4(&s.anchor,XMMatrixRotationX(s.tilt*neo::pi/180)*XMMatrixTranslation(s.px,s.py,s.pz)*XMLoadFloat4x4(&s.head));
+  XMStoreFloat4x4(&s.anchor,XMMatrixRotationX(s.tilt*neo::pi/180)*XMMatrixRotationY(s.yaw*neo::pi/180)*XMMatrixTranslation(s.px,s.py,s.pz)*XMLoadFloat4x4(&s.head));
   auto model=XMMatrixScaling(s.wheelWidth/s.renderer.modelWidth,s.wheelWidth/s.renderer.modelWidth,s.wheelWidth/s.renderer.modelWidth)*
    XMMatrixRotationZ(-neo::steering(s.input.axis(s.axis),s.rotation,s.invert))*XMLoadFloat4x4(&s.anchor);
   const auto& input=s.separateButtons?s.buttons:s.input;
