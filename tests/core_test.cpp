@@ -26,6 +26,7 @@ int main(){
  float swing=0;for(int i=0;i<20;i++){anim.update(in,1/90.f,.25f);swing=std::max(swing,anim.tiltA[neo::firstKnob+1].x);}
  assert(swing>.08f);run(.6f);assert(std::abs(anim.tiltA[neo::firstKnob+1].x)<.01f);
  in[neo::firstStick].y=1;assert(anim.update(in,1/90.f,.25f)==neo::Click::Button);run(.4f);assert(std::abs(anim.tiltB[neo::firstStick].x-1)<.02f);
+ in[10].analog=.4f;assert(anim.update(in,1/90.f,.25f)==neo::Click::None);run(.4f);assert(std::abs(anim.press[10].x-.4f)<.01f&&anim.flash[10]<.01f);
  anim.update(in,.5f,.25f);assert(std::isfinite(anim.press[0].x));
  std::cout<<"PASS: steering endpoints, clamping, inversion, 310mm geometry, eight button regions and control animation\n";
 }

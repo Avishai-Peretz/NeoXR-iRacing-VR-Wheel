@@ -13,7 +13,8 @@ struct Spring {
   for(float left=dt;left>0;left-=.001f){float h=std::min(left,.001f);v+=(omega*omega*(target-x)-2*zeta*omega*v)*h;x+=v*h;}
  }
 };
-struct ControlInput {bool down=false;int turn=0;float x=0,y=0;};
+// analog>=0 drives the control directly (0..1, e.g. a clutch lever axis) without click events.
+struct ControlInput {bool down=false;int turn=0;float x=0,y=0,analog=-1;};
 struct ControlPose {float press=0,flash=0,a=0,b=0;};
 struct Animator {
  std::array<Spring,controlCount> press,tiltA,tiltB;std::array<float,controlCount> flash{},knob{};
@@ -30,7 +31,7 @@ struct Animator {
    if((c.x||c.y)&&(c.x!=p.x||c.y!=p.y))event(i,Click::Button);
    previous[i]=c;previous[i].turn=0;
    flash[i]*=std::exp(-dt/.12f);
-   press[i].step(c.down?1.f:0.f,dt,90,.35f);
+   if(c.analog>=0)press[i].step(std::min(c.analog,1.f),dt,60,1);else press[i].step(c.down?1.f:0.f,dt,90,.35f);
    if(i>=firstStick){tiltA[i].step(c.x,dt,70,.4f);tiltB[i].step(c.y,dt,70,.4f);}
    else if(i>=firstKnob){tiltA[i].step(knob[i],dt,110,.45f);if(recentre[i])knob[i]*=std::exp(-dt/.06f);}
   }

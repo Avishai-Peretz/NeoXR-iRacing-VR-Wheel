@@ -25,7 +25,7 @@ struct Renderer {
  static_assert(sizeof(Uniform)==960,"HLSL constant buffer layout must match");
  std::array<std::array<float,4>,neo::controlCount> pivots{},axes{};
  UINT count=0,stride=0;bool detailed=false;float modelWidth=.310f;
- float buttonTravel=.0012f,paddleAngle=.12f,stickAngle=.2f,flashStrength=.75f;
+ float buttonTravel=.0012f,paddleAngle=.12f,clutchAngle=.21f,stickAngle=.2f,flashStrength=.75f;
  void execute(){ComPtr<ID3D11CommandList> commands;HRESULT result=context->FinishCommandList(FALSE,&commands);
   if(FAILED(result))throw std::runtime_error("FinishCommandList failed, HRESULT="+std::to_string(static_cast<unsigned long>(result)));
   immediate->ExecuteCommandList(commands.Get(),TRUE);}
@@ -54,8 +54,8 @@ struct Renderer {
    float4 pixelMain(P p):SV_TARGET{return float4(p.c,1);}
   )";
   const char* custom=R"(
-   // controls[c]: x=press spring, y=flash, z=knob angle or stick X tilt, w=stick Y tilt.
-   // motion: x=button travel, y=paddle angle, z=brightness, w=flash strength. camera.w=stick angle.
+   // controls[c]: x=press spring, y=flash, z=paddle travel angle, knob angle or stick X tilt, w=stick Y tilt.
+   // motion: x=button travel, z=brightness, w=flash strength. camera.w=stick angle.
    cbuffer C:register(b0){row_major float4x4 mvp;float4 controls[18];float4 pivots[18];float4 axes[18];float4 camera;float4 motion;};
    Texture2D baseTex:register(t0);Texture2D normalTex:register(t1);Texture2D ormTex:register(t2);SamplerState sampleTex:register(s0);
    struct V{float3 p:POSITION;float3 n:NORMAL;float2 uv:TEXCOORD0;float3 base:COLOR0;float3 emission:COLOR1;float2 factors:TEXCOORD1;float control:TEXCOORD2;};
@@ -66,7 +66,7 @@ struct Renderer {
    P vertexMain(V v){P o;o.glow=0;
     if(v.control>=0){int c=(int)v.control;float4 s=controls[c];float3 pivot=pivots[c].xyz;float3 d=v.p-pivot;
      if(c<8)v.p.z-=s.x*motion.x;
-     else if(c<12){float a=s.x*motion.y*pivots[c].w;v.p=pivot+rotY(d,a);v.n=rotY(v.n,a);}
+     else if(c<12){float a=s.x*s.z*pivots[c].w;v.p=pivot+rotY(d,a);v.n=rotY(v.n,a);}
      else if(c<16){float3 k=axes[c].xyz;v.p=pivot+rotAxis(d,k,s.z);v.n=rotAxis(v.n,k,s.z);}
      else{float ax=-s.w*camera.w,ay=s.z*camera.w;v.p=pivot+rotY(rotX(d,ax),ay)-float3(0,0,s.x*motion.x);v.n=rotY(rotX(v.n,ax),ay);}
      o.glow=saturate(s.y*motion.w+saturate(s.x)*.2);}
@@ -139,7 +139,7 @@ struct Renderer {
   context->IASetInputLayout(layout.Get());context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);UINT offset=0;auto* vb=vertices.Get();context->IASetVertexBuffers(0,1,&vb,&stride,&offset);
   context->VSSetShader(vs.Get(),nullptr,0);context->PSSetShader(ps.Get(),nullptr,0);
   Uniform u{};XMStoreFloat4x4(&u.mvp,mvp);
-  for(int i=0;i<neo::controlCount;i++){const auto& c=controls[i];u.controls[i]={c.press,c.flash,c.a,c.b};u.pivots[i]={pivots[i][0],pivots[i][1],pivots[i][2],pivots[i][3]};u.axes[i]={axes[i][0],axes[i][1],axes[i][2],0};}
+  for(int i=0;i<neo::controlCount;i++){const auto& c=controls[i];u.controls[i]={c.press,c.flash,i<8||i>=12?c.a:i<10?paddleAngle:clutchAngle,c.b};u.pivots[i]={pivots[i][0],pivots[i][1],pivots[i][2],pivots[i][3]};u.axes[i]={axes[i][0],axes[i][1],axes[i][2],0};}
   u.camera={cameraLocal.x,cameraLocal.y,cameraLocal.z,stickAngle};u.motion={buttonTravel,paddleAngle,brightness,flashStrength};
   context->UpdateSubresource(constants.Get(),0,nullptr,&u,0,0);auto* cb=constants.Get();context->VSSetConstantBuffers(0,1,&cb);context->PSSetConstantBuffers(0,1,&cb);
   if(detailed){ID3D11ShaderResourceView* tex[]={base.Get(),normal.Get(),orm.Get()};context->PSSetShaderResources(0,3,tex);auto* sam=sampler.Get();context->PSSetSamplers(0,1,&sam);context->IASetIndexBuffer(indices.Get(),DXGI_FORMAT_R32_UINT,0);context->DrawIndexed(count,0,0);}

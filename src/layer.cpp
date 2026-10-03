@@ -43,6 +43,7 @@ struct State {
  int axis=0;bool invert=false;int buttonMap[12]={0,1,2,3,4,5,6,7,-1,-1,-1,-1};float brightness=.8f;
  // knobMap[k]={clockwise,counter-clockwise}; stickMap[j]={up,down,left,right,push}.
  int knobMap[4][2]={{8,9},{10,11},{36,37},{38,39}},stickMap[2][5]={},stickPov[2]={-1,-1};bool prevKnob[4][2]={};
+ int clutchAxis[2]={-1,-1};float clutchRest[2]={-10000,-10000},clutchFull[2]={10000,10000};
  neo::Animator animator;ClickSound click;float knobStep=.26f;LARGE_INTEGER lastFrame{};
  ~State(){for(auto& e:eyes)if(e.chain)nextDestroySwapchain(e.chain);if(space)nextDestroySpace(space);}
 };
@@ -87,6 +88,10 @@ void initialize(State& s,const XrSessionCreateInfo* info){
  for(int i=0;i<8;i++){std::wstring k=L"Button"+std::to_wstring(i);s.buttonMap[i]=number(k.c_str(),i);}
  const wchar_t* paddleKeys[]={L"LeftPaddleButton",L"RightPaddleButton",L"LeftClutchButton",L"RightClutchButton"};
  for(int i=0;i<4;i++)s.buttonMap[8+i]=number(paddleKeys[i],-1);
+ s.renderer.clutchAngle=std::clamp(real(L"ClutchAngleDegrees",12),0.f,40.f)*neo::pi/180;
+ const wchar_t* clutches[]={L"LeftClutch",L"RightClutch"};
+ for(int j=0;j<2;j++){std::wstring k=clutches[j];s.clutchAxis[j]=number((k+L"Axis").c_str(),-1);
+  s.clutchRest[j]=real((k+L"Rest").c_str(),-10000);s.clutchFull[j]=real((k+L"Full").c_str(),10000);}
  const wchar_t* knobs[]={L"B9B10Knob",L"B11B12Knob",L"B37B38Knob",L"B39B40Knob"};
  for(int k=0;k<4;k++){s.knobMap[k][0]=number((knobs[k]+std::wstring(L"CW")).c_str(),s.knobMap[k][0]);
   s.knobMap[k][1]=number((knobs[k]+std::wstring(L"CCW")).c_str(),s.knobMap[k][1]);}
@@ -147,6 +152,8 @@ XrResult XRAPI_CALL endFrame(XrSession session,const XrFrameEndInfo* f){
   auto held=[&](int b){return input.valid&&b>=0&&b<128&&(input.state.rgbButtons[b]&128);};
   std::array<neo::ControlInput,neo::controlCount> controls{};
   for(int i=0;i<12;i++)controls[i].down=held(s.buttonMap[i]);
+  for(int j=0;j<2;j++){int a=s.clutchAxis[j];float span=s.clutchFull[j]-s.clutchRest[j];
+   if(input.valid&&a>=0&&a<8&&std::abs(span)>1)controls[10+j].analog=std::clamp((float(input.axis(a))-s.clutchRest[j])/span,0.f,1.f);}
   for(int k=0;k<4;k++)for(int d=0;d<2;d++){bool h=held(s.knobMap[k][d]);if(h&&!s.prevKnob[k][d])controls[neo::firstKnob+k].turn+=d?1:-1;s.prevKnob[k][d]=h;}
   for(int j=0;j<2;j++){auto& c=controls[neo::firstStick+j];const int* m=s.stickMap[j];
    c.x=float(held(m[3]))-float(held(m[2]));c.y=float(held(m[0]))-float(held(m[1]));c.down=held(m[4]);

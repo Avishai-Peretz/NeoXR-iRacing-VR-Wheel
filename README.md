@@ -44,7 +44,7 @@ The runtime asset has 23 separate parts, 206,786 triangles, and baked base-color
 - The joysticks tilt by `StickAngleDegrees` and depress on push. Map them with `LeftStickUp/Down/Left/Right/Push` (and `RightStick...`) or, if they report as a hat switch, `LeftStickPOV`/`RightStickPOV`. NeoXR-Input.exe now also prints hat positions.
 - Pressed buttons stay lightly highlighted; independent model LED colors come from the baked materials. This does not synchronize physical hardware LEDs or SimPro RGB settings.
 - LeftPaddleButton and RightPaddleButton animate the named left/right shifters. Set each to its zero-based DirectInput index on ButtonDevice. -1 disables that motion.
-- LeftClutchButton and RightClutchButton provide the same optional digital animation for clutch levers. Analog clutch travel is not implemented.
+- LeftClutchButton and RightClutchButton provide the same optional digital animation for clutch levers. For analog levers set `LeftClutchAxis`/`RightClutchAxis` plus their `Rest`/`Full` readings from NeoXR-Input; the lever then follows its travel up to `ClutchAngleDegrees`, without a click.
 - Paddle hinge locations are approximated from the parts' inner edges, and require visual calibration for exact motion. PaddleAngleDegrees=0 disables all paddle movement. The converter stores pivots in the binary asset; wheel-parts.json documents them.
 - Brightness controls the custom model's output. The renderer uses fixed studio lighting, not iRacing's cockpit lights. Procedural red paint was approximated during GLB export. The result will differ from the Blender preview's lighting.
 
