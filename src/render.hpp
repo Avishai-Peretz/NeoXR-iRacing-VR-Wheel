@@ -69,7 +69,8 @@ struct Renderer {
      else if(c<12){float a=s.x*s.z*pivots[c].w;v.p=pivot+rotY(d,a);v.n=rotY(v.n,a);}
      else if(c<16){float3 k=axes[c].xyz;v.p=pivot+rotAxis(d,k,s.z);v.n=rotAxis(v.n,k,s.z);}
      else{float ax=-s.w*camera.w,ay=s.z*camera.w;v.p=pivot+rotY(rotX(d,ax),ay)-float3(0,0,s.x*motion.x);v.n=rotY(rotX(v.n,ax),ay);}
-     o.glow=saturate(s.y*motion.w+saturate(s.x)*.2);}
+     // Only the push buttons are backlit, so only they light up.
+     if(c<8)o.glow=saturate(s.y*motion.w+saturate(s.x)*.2);}
     o.p=mul(float4(v.p,1),mvp);o.local=v.p;o.n=v.n;o.uv=v.uv;o.base=v.base;o.emission=v.emission;o.factors=v.factors;return o;}
    float3 mappedNormal(P p){float3 n=normalize(p.n);float3 dx=ddx(p.local),dy=ddy(p.local);float2 du=ddx(p.uv),dv=ddy(p.uv);
     float det=du.x*dv.y-du.y*dv.x;if(abs(det)<1e-12)return n;
