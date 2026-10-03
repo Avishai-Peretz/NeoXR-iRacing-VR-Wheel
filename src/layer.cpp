@@ -35,9 +35,12 @@ float real(const wchar_t* key,float def){wchar_t b[80];std::wstring ds=std::to_w
 void check(XrResult r){if(XR_FAILED(r))throw std::runtime_error("OpenXR operation failed");}
 struct Eye {XrSwapchain chain=XR_NULL_HANDLE;std::vector<XrSwapchainImageD3D11KHR> images;};
 struct State {
- XrSession session=XR_NULL_HANDLE;XrSpace space=XR_NULL_HANDLE;std::array<Eye,2> eyes;
+ // gameSpace is the space of the game's own projection layer; the wheel is anchored and composited in it
+ // so that game or runtime recentering moves the wheel together with the cockpit.
+ XrSession session=XR_NULL_HANDLE;XrSpace gameSpace=XR_NULL_HANDLE;std::array<Eye,2> eyes;
  Renderer renderer;WheelInput input,buttons;bool separateButtons=false,ready=false,visible=true;
- bool shouldRender=false,stereo=false,anchored=false;bool prevF8=false,prevF9=false,prevCloser=false,prevFarther=false,prevTiltUp=false,prevTiltDown=false;
+ bool shouldRender=false,stereo=false,anchored=false,saved=false;bool prevF8=false,prevF9=false,prevCloser=false,prevFarther=false,prevTiltUp=false,prevTiltDown=false;
+ int recenterKey=0,recenterButton=-1;bool prevRecenterKey=false,prevRecenterButton=false;
  UINT width=1024,height=1024;uint32_t maxLayers=0;
  XMFLOAT4X4 head{},anchor{};float wheelWidth=.31f,rotation=900,tilt=0,px=0,py=-.3f,pz=-.5f;
  int axis=0;bool invert=false;int buttonMap[12]={0,1,2,3,4,5,6,7,-1,-1,-1,-1};float brightness=.8f;
@@ -45,11 +48,18 @@ struct State {
  int knobMap[4][2]={{8,9},{10,11},{36,37},{38,39}},stickMap[2][5]={},stickPov[2]={-1,-1};bool prevKnob[4][2]={};
  int clutchAxis[2]={-1,-1};float clutchRest[2]={-10000,-10000},clutchFull[2]={10000,10000};
  neo::Animator animator;ClickSound click;float knobStep=.26f;LARGE_INTEGER lastFrame{};
- ~State(){for(auto& e:eyes)if(e.chain)nextDestroySwapchain(e.chain);if(space)nextDestroySpace(space);}
+ ~State(){for(auto& e:eyes)if(e.chain)nextDestroySwapchain(e.chain);}
 };
 std::unique_ptr<State> state;bool target=false;
 XMMATRIX pose(XrPosef p){return XMMatrixRotationQuaternion(XMVectorSet(p.orientation.x,p.orientation.y,p.orientation.z,p.orientation.w))*
  XMMatrixTranslation(p.position.x,p.position.y,p.position.z);}
+// Calibration keeps only the head's heading, so looking down while recentering does not tilt the wheel.
+XMMATRIX level(float x,float y,float z,float yaw){return XMMatrixRotationY(yaw)*XMMatrixTranslation(x,y,z);}
+// Accepts F1-F24, a single letter or digit, or a decimal virtual-key code. Empty or 0 disables.
+int keyCode(const wchar_t* text){
+ if(!text[0])return 0;if((text[0]==L'F'||text[0]==L'f')&&text[1]){int n=_wtoi(text+1);if(n>=1&&n<=24)return VK_F1+n-1;}
+ if(!text[1]&&iswalnum(text[0]))return towupper(text[0]);return _wtoi(text);
+}
 void initialize(State& s,const XrSessionCreateInfo* info){
  const auto* node=static_cast<const XrBaseInStructure*>(info->next);ID3D11Device* device=nullptr;
  for(;node;node=node->next)if(node->type==XR_TYPE_GRAPHICS_BINDING_D3D11_KHR)
@@ -62,8 +72,6 @@ void initialize(State& s,const XrSessionCreateInfo* info){
  // sRGB target: shader colors are linear; runtime decodes for compositing.
  int64_t format=DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
  if(std::find(formats.begin(),formats.end(),format)==formats.end())throw std::runtime_error("RGBA8 sRGB swapchain unsupported");
- XrReferenceSpaceCreateInfo ref{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};ref.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_LOCAL;ref.poseInReferenceSpace.orientation.w=1;
- check(nextCreateReferenceSpace(s.session,&ref,&s.space));
  for(auto& eye:s.eyes){XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};ci.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
  ci.format=format;ci.sampleCount=1;ci.width=s.width;ci.height=s.height;ci.faceCount=1;ci.arraySize=1;ci.mipCount=1;
  check(nextCreateSwapchain(s.session,&ci,&eye.chain));check(nextEnumerateSwapchainImages(eye.chain,0,&count,nullptr));
@@ -105,6 +113,11 @@ void initialize(State& s,const XrSessionCreateInfo* info){
  wchar_t sound[MAX_PATH]={};GetPrivateProfileStringW(L"Wheel",L"ClickSoundFile",L"",sound,MAX_PATH,ini().c_str());
  std::filesystem::path soundFile(sound);if(!soundFile.empty()&&soundFile.is_relative())soundFile=std::filesystem::path(folder)/soundFile;
  s.click.init(std::clamp(real(L"ClickVolume",.5f),0.f,1.f),soundFile);
+ wchar_t text[80]={};GetPrivateProfileStringW(L"Wheel",L"RecenterKey",L"",text,80,ini().c_str());s.recenterKey=keyCode(text);
+ s.recenterButton=number(L"RecenterButton",-1);
+ GetPrivateProfileStringW(L"Wheel",L"Calibration",L"",text,80,ini().c_str());float c[4];
+ if(swscanf_s(text,L"%f,%f,%f,%f",c,c+1,c+2,c+3)==4&&std::isfinite(c[0]+c[1]+c[2]+c[3])){
+  XMStoreFloat4x4(&s.head,level(c[0],c[1],c[2],c[3]));s.saved=s.anchored=true;log("Saved calibration loaded");}
  s.ready=true;log("D3D11 stereo renderer and input initialized; F8 calibrates, F9 toggles");
 }
 XrResult XRAPI_CALL createSession(XrInstance i,const XrSessionCreateInfo* ci,XrSession* out){
@@ -117,7 +130,7 @@ XrResult XRAPI_CALL createSession(XrInstance i,const XrSessionCreateInfo* ci,XrS
 XrResult XRAPI_CALL destroySession(XrSession s){std::lock_guard<std::recursive_mutex> guard(lock);if(state&&state->session==s)state.reset();return nextDestroySession(s);}
 XrResult XRAPI_CALL destroyInstance(XrInstance i){std::lock_guard<std::recursive_mutex> guard(lock);state.reset();auto r=nextDestroyInstance(i);instance=XR_NULL_HANDLE;return r;}
 XrResult XRAPI_CALL beginSession(XrSession s,const XrSessionBeginInfo* b){auto r=nextBeginSession(s,b);
- std::lock_guard<std::recursive_mutex> guard(lock);if(state&&state->session==s){state->stereo=b->primaryViewConfigurationType==XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;state->anchored=false;}return r;}
+ std::lock_guard<std::recursive_mutex> guard(lock);if(state&&state->session==s){state->stereo=b->primaryViewConfigurationType==XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;state->anchored=state->saved;}return r;}
 XrResult XRAPI_CALL waitFrame(XrSession s,const XrFrameWaitInfo* w,XrFrameState* f){auto r=nextWaitFrame(s,w,f);
  std::lock_guard<std::recursive_mutex> guard(lock);if(state&&state->session==s)state->shouldRender=XR_SUCCEEDED(r)&&f->shouldRender;return r;}
 XrResult XRAPI_CALL endFrame(XrSession session,const XrFrameEndInfo* f){
@@ -126,6 +139,11 @@ XrResult XRAPI_CALL endFrame(XrSession session,const XrFrameEndInfo* f){
  auto& s=*state;
  bool f8=(GetAsyncKeyState(VK_F8)&0x8000)!=0,f9=(GetAsyncKeyState(VK_F9)&0x8000)!=0;
  bool recenter=f8&&!s.prevF8;if(f9&&!s.prevF9)s.visible=!s.visible;s.prevF8=f8;s.prevF9=f9;
+ if(s.recenterKey){bool k=(GetAsyncKeyState(s.recenterKey)&0x8000)!=0;recenter|=k&&!s.prevRecenterKey;s.prevRecenterKey=k;}
+ XrSpace space=XR_NULL_HANDLE;
+ for(uint32_t i=0;i<f->layerCount&&!space;i++)if(f->layers[i]&&f->layers[i]->type==XR_TYPE_COMPOSITION_LAYER_PROJECTION)space=f->layers[i]->space;
+ if(!space)return nextEndFrame(session,f);
+ if(space!=s.gameSpace){if(s.gameSpace)log("Game switched reference space (game recenter); wheel follows the cockpit");s.gameSpace=space;}
  bool chord=(GetAsyncKeyState(VK_CONTROL)&0x8000)&&(GetAsyncKeyState(VK_SHIFT)&0x8000);
  auto tap=[&](int key,bool& prev){bool down=chord&&(GetAsyncKeyState(key)&0x8000);bool hit=down&&!prev;prev=down;return hit;};
  auto save=[](const wchar_t* key,const wchar_t* format,float v){wchar_t value[32];swprintf_s(value,format,v);
@@ -137,14 +155,20 @@ XrResult XRAPI_CALL endFrame(XrSession session,const XrFrameEndInfo* f){
  if(!s.visible)return nextEndFrame(session,f);
  try{
   if(!s.input.poll())return nextEndFrame(session,f);if(s.separateButtons)s.buttons.poll();
-  XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO};li.viewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;li.displayTime=f->displayTime;li.space=s.space;
+  {const auto& in=s.separateButtons?s.buttons:s.input;int b=s.recenterButton;
+   bool h=in.valid&&b>=0&&b<128&&(in.state.rgbButtons[b]&128);recenter|=h&&!s.prevRecenterButton;s.prevRecenterButton=h;}
+  XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO};li.viewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;li.displayTime=f->displayTime;li.space=space;
   XrViewState vs{XR_TYPE_VIEW_STATE};uint32_t count=0;std::array<XrView,2> views={XrView{XR_TYPE_VIEW},XrView{XR_TYPE_VIEW}};
   check(nextLocateViews(session,&li,&vs,2,&count,views.data()));
   auto required=XR_VIEW_STATE_ORIENTATION_VALID_BIT|XR_VIEW_STATE_POSITION_VALID_BIT;
   if(count!=2||(vs.viewStateFlags&required)!=required)return nextEndFrame(session,f);
-  if(!s.anchored||recenter){auto p=views[0].pose;p.position.x=(p.position.x+views[1].pose.position.x)/2;
-   p.position.y=(p.position.y+views[1].pose.position.y)/2;p.position.z=(p.position.z+views[1].pose.position.z)/2;
-   XMStoreFloat4x4(&s.head,pose(p));s.anchored=true;}
+  if(!s.anchored||recenter){const auto& a=views[0].pose;const auto& b=views[1].pose;const auto& q=a.orientation;
+   float x=(a.position.x+b.position.x)/2,y=(a.position.y+b.position.y)/2,z=(a.position.z+b.position.z)/2;
+   float yaw=std::atan2(2*(q.x*q.z+q.w*q.y),1-2*(q.x*q.x+q.y*q.y));
+   XMStoreFloat4x4(&s.head,level(x,y,z,yaw));s.anchored=true;
+   // Only an explicit recenter is saved; the automatic first-frame placement is not.
+   if(recenter){wchar_t value[80];swprintf_s(value,L"%.4f,%.4f,%.4f,%.4f",x,y,z,yaw);
+    WritePrivateProfileStringW(L"Wheel",L"Calibration",value,ini().c_str());s.saved=true;log("Calibration saved");}}
   XMStoreFloat4x4(&s.anchor,XMMatrixRotationX(s.tilt*neo::pi/180)*XMMatrixTranslation(s.px,s.py,s.pz)*XMLoadFloat4x4(&s.head));
   auto model=XMMatrixScaling(s.wheelWidth/s.renderer.modelWidth,s.wheelWidth/s.renderer.modelWidth,s.wheelWidth/s.renderer.modelWidth)*
    XMMatrixRotationZ(-neo::steering(s.input.axis(s.axis),s.rotation,s.invert))*XMLoadFloat4x4(&s.anchor);
@@ -179,7 +203,7 @@ XrResult XRAPI_CALL endFrame(XrSession session,const XrFrameEndInfo* f){
    check(nextReleaseSwapchainImage(e.chain,&ri));pv[eye].pose=views[eye].pose;pv[eye].fov=views[eye].fov;
    pv[eye].subImage.swapchain=e.chain;pv[eye].subImage.imageRect.extent={int32_t(s.width),int32_t(s.height)};
   }
-  XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};layer.space=s.space;
+  XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};layer.space=space;
   layer.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;layer.viewCount=2;layer.views=pv.data();
   std::vector<const XrCompositionLayerBaseHeader*> layers(f->layers,f->layers+f->layerCount);
   layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer));auto frame=*f;frame.layerCount=uint32_t(layers.size());frame.layers=layers.data();
@@ -188,11 +212,20 @@ XrResult XRAPI_CALL endFrame(XrSession session,const XrFrameEndInfo* f){
  }catch(const std::exception& e){log(e.what());s.ready=false;}catch(...){log("Render failed; overlay disabled");s.ready=false;}
  return nextEndFrame(session,f);
 }
+XrResult XRAPI_CALL createReferenceSpace(XrSession session,const XrReferenceSpaceCreateInfo* ci,XrSpace* out){
+ XrResult r=nextCreateReferenceSpace(session,ci,out);
+ static int logged=0;
+ if(target&&ci&&XR_SUCCEEDED(r)&&logged++<32){const auto& p=ci->poseInReferenceSpace;char line[160];
+  snprintf(line,sizeof line,"Game created reference space type=%d offset=(%.3f,%.3f,%.3f) rotation=(%.3f,%.3f,%.3f,%.3f)",
+   int(ci->referenceSpaceType),p.position.x,p.position.y,p.position.z,p.orientation.x,p.orientation.y,p.orientation.z,p.orientation.w);log(line);}
+ return r;
+}
 XrResult XRAPI_CALL gipa(XrInstance i,const char* name,PFN_xrVoidFunction* f){
  if(!name||!f)return XR_ERROR_VALIDATION_FAILURE;
  #define HOOK(n,fn) if(std::strcmp(name,"xr" #n)==0){*f=reinterpret_cast<PFN_xrVoidFunction>(fn);return XR_SUCCESS;}
  HOOK(GetInstanceProcAddr,gipa) HOOK(CreateSession,createSession) HOOK(DestroySession,destroySession)
  HOOK(DestroyInstance,destroyInstance) HOOK(EndFrame,endFrame) HOOK(WaitFrame,waitFrame) HOOK(BeginSession,beginSession)
+ HOOK(CreateReferenceSpace,createReferenceSpace)
  return nextGipa(i,name,f);
 }
 XrResult XRAPI_CALL createInstance(const XrInstanceCreateInfo* ci,const XrApiLayerCreateInfo* info,XrInstance* out){

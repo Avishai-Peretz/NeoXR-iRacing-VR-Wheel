@@ -16,7 +16,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Update.ps1 -Installe
 
 Change the path if the working package is elsewhere. The script builds x64 Release, runs tests, installs into the new source's build/package folder, backs up the old DLL and settings, then copies the new assets and DLL into the existing package. Your INI and registered manifest are retained. No re-registration is needed. It stops before updating if compilation or tests fail.
 
-Start iRacing in OpenXR, sit normally and press **F8**. **F9** hides/shows the wheel. **Ctrl+Shift+Down** moves the wheel 1 cm closer and **Ctrl+Shift+Up** moves it 1 cm away. **Ctrl+Shift+PageUp** tilts the top of the wheel 1° toward you and **Ctrl+Shift+PageDown** tilts it 1° away. The new values are saved as `Z` and `TiltDegrees` in NeoXR.ini. If the old INI has no Model entry, the default is now `custom`. To select explicitly, add these entries under the existing `[Wheel]` section:
+Start iRacing in OpenXR, sit normally and press **F8**. F8 saves this calibration as `Calibration` in NeoXR.ini, so the wheel returns to the same place in later sessions. The wheel lives in iRacing's own tracking space, so when iRacing or the headset recenters, the wheel moves with the cockpit; set `RecenterKey` or `RecenterButton` to the control you bind to iRacing's VR recenter to recenter both together. **F9** hides/shows the wheel. **Ctrl+Shift+Down** moves the wheel 1 cm closer and **Ctrl+Shift+Up** moves it 1 cm away. **Ctrl+Shift+PageUp** tilts the top of the wheel 1° toward you and **Ctrl+Shift+PageDown** tilts it 1° away. The new values are saved as `Z` and `TiltDegrees` in NeoXR.ini. If the old INI has no Model entry, the default is now `custom`. To select explicitly, add these entries under the existing `[Wheel]` section:
 
 ```ini
 Model=custom
@@ -83,7 +83,7 @@ If the overlay is absent, check NeoXR.log beside the DLL. A shader or asset-load
 
 ## Existing limits
 
-The layer composites over the game and cannot remove its wheel or occlude against its cockpit. Hide the original wheel in iRacing through its supported settings where possible. This remains a single-instance, single rendered session, D3D11 prototype. Device GUID persistence, a settings GUI, INI hot reload, runtime recenter-event handling, D3D12/Vulkan and saved tracking-space calibration are not implemented. F8 must follow runtime recentering.
+The layer composites over the game and cannot remove its wheel or occlude against its cockpit. Hide the original wheel in iRacing through its supported settings where possible. This remains a single-instance, single rendered session, D3D11 prototype. Device GUID persistence, a settings GUI, INI hot reload and D3D12/Vulkan are not implemented. If iRacing recenters internally without changing its tracking space, NeoXR cannot see it; bind the same control with `RecenterKey`/`RecenterButton`. NeoXR.log lists the reference spaces iRacing creates and notes when it switches between them.
 
 Unregister.ps1 removes this package's manifest registration. Enabled=0 disables its rendering on the next session; NEOXR_DISABLE=1 in the application's inherited environment prevents loading. No force-feedback commands are issued. If the game blocks the layer, stop; no bypass is included.
 
