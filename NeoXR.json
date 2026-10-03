@@ -1,0 +1,11 @@
+{
+  "file_format_version": "1.0.0",
+  "api_layer": {
+    "name": "XR_APILAYER_AVI_neoxr",
+    "library_path": ".\\NeoXR.dll",
+    "api_version": "1.0",
+    "implementation_version": "2",
+    "description": "NeoXR custom stereoscopic wheel overlay",
+    "disable_environment": "NEOXR_DISABLE"
+  }
+}
