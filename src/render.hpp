@@ -21,9 +21,9 @@ struct Renderer {
  ComPtr<ID3D11RasterizerState> raster;ComPtr<ID3D11DepthStencilState> depthState;
  ComPtr<ID3D11SamplerState> sampler;ComPtr<ID3D11ShaderResourceView> base,normal,orm;
  ComPtr<ID3D11Texture2D> depth;ComPtr<ID3D11DepthStencilView> dsv;
- struct alignas(16) Uniform {XMFLOAT4X4 mvp;XMFLOAT4 controls[neo::controlCount],pivots[neo::controlCount],camera,motion;};
- static_assert(sizeof(Uniform)==672,"HLSL constant buffer layout must match");
- std::array<std::array<float,4>,neo::controlCount> pivots{};
+ struct alignas(16) Uniform {XMFLOAT4X4 mvp;XMFLOAT4 controls[neo::controlCount],pivots[neo::controlCount],axes[neo::controlCount],camera,motion;};
+ static_assert(sizeof(Uniform)==960,"HLSL constant buffer layout must match");
+ std::array<std::array<float,4>,neo::controlCount> pivots{},axes{};
  UINT count=0,stride=0;bool detailed=false;float modelWidth=.310f;
  float buttonTravel=.0012f,paddleAngle=.12f,stickAngle=.2f,flashStrength=.75f;
  void execute(){ComPtr<ID3D11CommandList> commands;HRESULT result=context->FinishCommandList(FALSE,&commands);
@@ -47,7 +47,7 @@ struct Renderer {
  void init(ID3D11Device* d,UINT width,UINT height,const std::filesystem::path& assets={}){
   dev=d;dev->GetImmediateContext(&immediate);hr(dev->CreateDeferredContext(0,&context));detailed=!assets.empty();
   const char* placeholder=R"(
-   cbuffer C:register(b0){row_major float4x4 mvp;float4 controls[18];float4 pivots[18];float4 camera;float4 motion;};
+   cbuffer C:register(b0){row_major float4x4 mvp;float4 controls[18];float4 pivots[18];float4 axes[18];float4 camera;float4 motion;};
    struct V{float3 p:POSITION;float3 c:COLOR;float b:TEXCOORD;};
    struct P{float4 p:SV_POSITION;float3 c:COLOR;};
    P vertexMain(V v){P o;o.p=mul(float4(v.p,1),mvp);o.c=v.c;if(v.b>=0){float4 s=controls[(int)v.b];o.c=lerp(o.c,1,saturate(s.x+s.y*motion.w));}return o;}
@@ -56,18 +56,18 @@ struct Renderer {
   const char* custom=R"(
    // controls[c]: x=press spring, y=flash, z=knob angle or stick X tilt, w=stick Y tilt.
    // motion: x=button travel, y=paddle angle, z=brightness, w=flash strength. camera.w=stick angle.
-   cbuffer C:register(b0){row_major float4x4 mvp;float4 controls[18];float4 pivots[18];float4 camera;float4 motion;};
+   cbuffer C:register(b0){row_major float4x4 mvp;float4 controls[18];float4 pivots[18];float4 axes[18];float4 camera;float4 motion;};
    Texture2D baseTex:register(t0);Texture2D normalTex:register(t1);Texture2D ormTex:register(t2);SamplerState sampleTex:register(s0);
    struct V{float3 p:POSITION;float3 n:NORMAL;float2 uv:TEXCOORD0;float3 base:COLOR0;float3 emission:COLOR1;float2 factors:TEXCOORD1;float control:TEXCOORD2;};
    struct P{float4 p:SV_POSITION;float3 local:TEXCOORD0;float3 n:TEXCOORD1;float2 uv:TEXCOORD2;float3 base:COLOR0;float3 emission:COLOR1;float2 factors:TEXCOORD3;float glow:TEXCOORD4;};
    float3 rotX(float3 d,float a){float s=sin(a),c=cos(a);return float3(d.x,c*d.y-s*d.z,s*d.y+c*d.z);}
    float3 rotY(float3 d,float a){float s=sin(a),c=cos(a);return float3(c*d.x+s*d.z,d.y,-s*d.x+c*d.z);}
-   float3 rotZ(float3 d,float a){float s=sin(a),c=cos(a);return float3(c*d.x-s*d.y,s*d.x+c*d.y,d.z);}
+   float3 rotAxis(float3 d,float3 k,float a){float s=sin(a),c=cos(a);return d*c+cross(k,d)*s+k*dot(k,d)*(1-c);}
    P vertexMain(V v){P o;o.glow=0;
     if(v.control>=0){int c=(int)v.control;float4 s=controls[c];float3 pivot=pivots[c].xyz;float3 d=v.p-pivot;
      if(c<8)v.p.z-=s.x*motion.x;
      else if(c<12){float a=s.x*motion.y*pivots[c].w;v.p=pivot+rotY(d,a);v.n=rotY(v.n,a);}
-     else if(c<16){v.p=pivot+rotZ(d,s.z);v.n=rotZ(v.n,s.z);}
+     else if(c<16){float3 k=axes[c].xyz;v.p=pivot+rotAxis(d,k,s.z);v.n=rotAxis(v.n,k,s.z);}
      else{float ax=-s.w*camera.w,ay=s.z*camera.w;v.p=pivot+rotY(rotX(d,ax),ay)-float3(0,0,s.x*motion.x);v.n=rotY(rotX(v.n,ax),ay);}
      o.glow=saturate(s.y*motion.w+saturate(s.x)*.2);}
     o.p=mul(float4(v.p,1),mvp);o.local=v.p;o.n=v.n;o.uv=v.uv;o.base=v.base;o.emission=v.emission;o.factors=v.factors;return o;}
@@ -92,7 +92,7 @@ struct Renderer {
   hr(dev->CreateVertexShader(v->GetBufferPointer(),v->GetBufferSize(),nullptr,&vs));hr(dev->CreatePixelShader(p->GetBufferPointer(),p->GetBufferSize(),nullptr,&ps));
   D3D11_BUFFER_DESC b{};D3D11_SUBRESOURCE_DATA data{};
   if(detailed){
-   auto mesh=neo::loadModel(assets/L"wheel.neo");modelWidth=mesh.width;pivots=mesh.pivots;count=UINT(mesh.indices.size());stride=sizeof(neo::ModelVertex);
+   auto mesh=neo::loadModel(assets/L"wheel.neo");modelWidth=mesh.width;pivots=mesh.pivots;axes=mesh.axes;count=UINT(mesh.indices.size());stride=sizeof(neo::ModelVertex);
    D3D11_INPUT_ELEMENT_DESC elems[]={
     {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D11_INPUT_PER_VERTEX_DATA,0},
     {"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D11_INPUT_PER_VERTEX_DATA,0},
@@ -139,7 +139,7 @@ struct Renderer {
   context->IASetInputLayout(layout.Get());context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);UINT offset=0;auto* vb=vertices.Get();context->IASetVertexBuffers(0,1,&vb,&stride,&offset);
   context->VSSetShader(vs.Get(),nullptr,0);context->PSSetShader(ps.Get(),nullptr,0);
   Uniform u{};XMStoreFloat4x4(&u.mvp,mvp);
-  for(int i=0;i<neo::controlCount;i++){const auto& c=controls[i];u.controls[i]={c.press,c.flash,c.a,c.b};u.pivots[i]={pivots[i][0],pivots[i][1],pivots[i][2],pivots[i][3]};}
+  for(int i=0;i<neo::controlCount;i++){const auto& c=controls[i];u.controls[i]={c.press,c.flash,c.a,c.b};u.pivots[i]={pivots[i][0],pivots[i][1],pivots[i][2],pivots[i][3]};u.axes[i]={axes[i][0],axes[i][1],axes[i][2],0};}
   u.camera={cameraLocal.x,cameraLocal.y,cameraLocal.z,stickAngle};u.motion={buttonTravel,paddleAngle,brightness,flashStrength};
   context->UpdateSubresource(constants.Get(),0,nullptr,&u,0,0);auto* cb=constants.Get();context->VSSetConstantBuffers(0,1,&cb);context->PSSetConstantBuffers(0,1,&cb);
   if(detailed){ID3D11ShaderResourceView* tex[]={base.Get(),normal.Get(),orm.Get()};context->PSSetShaderResources(0,3,tex);auto* sam=sampler.Get();context->PSSetSamplers(0,1,&sam);context->IASetIndexBuffer(indices.Get(),DXGI_FORMAT_R32_UINT,0);context->DrawIndexed(count,0,0);}

@@ -11,17 +11,34 @@
 namespace neo {
 struct ModelVertex {float p[3],n[3],uv[2],base[3],emission[3],factors[2],control;};
 static_assert(sizeof(ModelVertex)==68,"Asset vertex layout must match converter");
-struct Model {std::vector<ModelVertex> vertices;std::vector<uint32_t> indices;float width=.310f;std::array<std::array<float,4>,controlCount> pivots{};};
-// Knob/joystick axis centre: least-squares intersection of side-wall normals in XY.
-// Knobs spin about their mean depth; joysticks tilt about their rear (base) depth.
+struct Model {std::vector<ModelVertex> vertices;std::vector<uint32_t> indices;float width=.310f;
+ std::array<std::array<float,4>,controlCount> pivots{},axes{};};
+// Round knobs and joysticks face +Z. Thumb rollers are long cylinders lying in the face plane,
+// so an elongated knob spins about its longest principal axis instead.
+// The axis centre is the least-squares meeting point of the side-wall normals.
 inline void fitPivots(Model& m){
  for(int c=firstKnob;c<controlCount;c++){
-  double a=0,b=0,d=0,e=0,f=0,z=0,back=10;size_t n=0;
-  for(const auto& v:m.vertices){if(int(v.control)!=c)continue;n++;z+=v.p[2];back=std::min(back,double(v.p[2]));
-   double nx=v.n[0],ny=v.n[1],l=std::hypot(nx,ny);if(l<.95)continue;nx/=l;ny/=l;
-   double m00=1-nx*nx,m01=-nx*ny,m11=1-ny*ny;a+=m00;b+=m01;d+=m11;e+=m00*v.p[0]+m01*v.p[1];f+=m01*v.p[0]+m11*v.p[1];}
-  double det=a*d-b*b;if(!n||std::abs(det)<1e-9)continue;
-  m.pivots[c]={float((d*e-b*f)/det),float((a*f-b*e)/det),float(c<firstStick?z/double(n):back),1};
+  double mean[3]={},cov[3][3]={},back=10;size_t n=0;
+  for(const auto& v:m.vertices)if(int(v.control)==c){n++;for(int i=0;i<3;i++)mean[i]+=v.p[i];back=std::min(back,double(v.p[2]));}
+  if(!n)continue;for(double& x:mean)x/=double(n);
+  for(const auto& v:m.vertices)if(int(v.control)==c)for(int i=0;i<3;i++)for(int j=0;j<3;j++)cov[i][j]+=(v.p[i]-mean[i])*(v.p[j]-mean[j]);
+  double axis[3]={0,0,1},tr=cov[0][0]+cov[1][1],gap=std::hypot((cov[0][0]-cov[1][1])/2,cov[0][1]);
+  if(c<firstStick&&tr/2-gap>0&&(tr/2+gap)>2.25*(tr/2-gap)){
+   double x[3]={1,1,1};for(int it=0;it<100;it++){double y[3]={};for(int i=0;i<3;i++)for(int j=0;j<3;j++)y[i]+=cov[i][j]*x[j];
+    double l=std::sqrt(y[0]*y[0]+y[1]*y[1]+y[2]*y[2]);if(l<1e-30)break;for(int i=0;i<3;i++)x[i]=y[i]/l;}
+   double s=x[1]<0?-1:1;for(int i=0;i<3;i++)axis[i]=x[i]*s;}
+  double u[3]={1,0,0};if(std::abs(axis[0])>.9){u[0]=0;u[1]=1;}
+  double dot=u[0]*axis[0]+u[1]*axis[1]+u[2]*axis[2],len=0;for(int i=0;i<3;i++){u[i]-=dot*axis[i];len+=u[i]*u[i];}for(double& x:u)x/=std::sqrt(len);
+  double w[3]={axis[1]*u[2]-axis[2]*u[1],axis[2]*u[0]-axis[0]*u[2],axis[0]*u[1]-axis[1]*u[0]};
+  auto along=[](const double* a,const float* b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];};
+  double a=0,b=0,d=0,e=0,f=0;
+  for(const auto& v:m.vertices){if(int(v.control)!=c)continue;
+   double nu=along(u,v.n),nw=along(w,v.n),l=std::hypot(nu,nw);if(l<.9)continue;nu/=l;nw/=l;
+   double pu=along(u,v.p),pw=along(w,v.p),m00=1-nu*nu,m01=-nu*nw,m11=1-nw*nw;a+=m00;b+=m01;d+=m11;e+=m00*pu+m01*pw;f+=m01*pu+m11*pw;}
+  double det=a*d-b*b;if(std::abs(det)<1e-9)continue;
+  double cu=(d*e-b*f)/det,cw=(a*f-b*e)/det,ca=axis[0]*mean[0]+axis[1]*mean[1]+axis[2]*mean[2],p[3];
+  for(int i=0;i<3;i++)p[i]=u[i]*cu+w[i]*cw+axis[i]*ca;
+  m.pivots[c]={float(p[0]),float(p[1]),float(c<firstStick?p[2]:back),1};m.axes[c]={float(axis[0]),float(axis[1]),float(axis[2]),0};
  }
 }
 inline Model loadModel(const std::filesystem::path& path){

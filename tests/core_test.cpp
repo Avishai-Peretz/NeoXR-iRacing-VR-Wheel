@@ -22,6 +22,9 @@ int main(){
  assert(peak<-.05f);run(.4f);assert(std::abs(anim.press[0].x)<.02f);
  in[neo::firstKnob].turn=-1;assert(anim.update(in,1/90.f,.25f)==neo::Click::Detent);in[neo::firstKnob].turn=0;
  run(.4f);assert(std::abs(anim.tiltA[neo::firstKnob].x+.25f)<.01f);
+ anim.recentre[neo::firstKnob+1]=true;in[neo::firstKnob+1].turn=1;anim.update(in,1/90.f,.25f);in[neo::firstKnob+1].turn=0;
+ float swing=0;for(int i=0;i<20;i++){anim.update(in,1/90.f,.25f);swing=std::max(swing,anim.tiltA[neo::firstKnob+1].x);}
+ assert(swing>.08f);run(.6f);assert(std::abs(anim.tiltA[neo::firstKnob+1].x)<.01f);
  in[neo::firstStick].y=1;assert(anim.update(in,1/90.f,.25f)==neo::Click::Button);run(.4f);assert(std::abs(anim.tiltB[neo::firstStick].x-1)<.02f);
  anim.update(in,.5f,.25f);assert(std::isfinite(anim.press[0].x));
  std::cout<<"PASS: steering endpoints, clamping, inversion, 310mm geometry, eight button regions and control animation\n";

@@ -18,6 +18,8 @@ struct ControlPose {float press=0,flash=0,a=0,b=0;};
 struct Animator {
  std::array<Spring,controlCount> press,tiltA,tiltB;std::array<float,controlCount> flash{},knob{};
  std::array<ControlInput,controlCount> previous{};
+ // Knobs whose mesh is only detailed on the visible arc nudge per detent and settle back.
+ std::array<bool,controlCount> recentre{};
  Click update(const std::array<ControlInput,controlCount>& in,float dt,float knobStep){
   dt=std::clamp(dt,0.f,.1f);Click click=Click::None;
   auto event=[&](int i,Click kind){flash[i]=1;click=std::max(click,kind);};
@@ -30,7 +32,7 @@ struct Animator {
    flash[i]*=std::exp(-dt/.12f);
    press[i].step(c.down?1.f:0.f,dt,90,.35f);
    if(i>=firstStick){tiltA[i].step(c.x,dt,70,.4f);tiltB[i].step(c.y,dt,70,.4f);}
-   else if(i>=firstKnob)tiltA[i].step(knob[i],dt,110,.45f);
+   else if(i>=firstKnob){tiltA[i].step(knob[i],dt,110,.45f);if(recentre[i])knob[i]*=std::exp(-dt/.06f);}
   }
   return click;
  }

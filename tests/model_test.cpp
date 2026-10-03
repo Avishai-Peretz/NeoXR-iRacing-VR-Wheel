@@ -13,7 +13,9 @@ int main(int argc,char** argv){
  // Fitted knob/joystick centres lie inside each part, within 3 mm of the parts' measured hubs.
  const float hubs[6][2]={{.0839f,-.0448f},{-.0853f,-.0417f},{-.0462f,-.0504f},{.0449f,-.0512f},{-.046f,.0462f},{.047f,.045f}};
  for(int c=neo::firstKnob;c<neo::controlCount;c++){const auto& p=m.pivots[c];assert(p[3]==1);
-  assert(std::hypot(p[0]-hubs[c-neo::firstKnob][0],p[1]-hubs[c-neo::firstKnob][1])<.003f);}
+  assert(std::hypot(p[0]-hubs[c-neo::firstKnob][0],p[1]-hubs[c-neo::firstKnob][1])<.003f);
+  // B9/B10 and B11/B12 are thumb rollers lying in the face plane; the rest face forward.
+  float z=std::abs(m.axes[c][2]);assert(c<14?z<.3f:z>.99f);}
  auto bytes=std::ifstream(argv[1],std::ios::binary);std::string data((std::istreambuf_iterator<char>(bytes)),{});
  auto temp=std::filesystem::temp_directory_path()/"neoxr-model-invalid.neo";
  auto rejects=[&](const std::string& b){std::ofstream out(temp,std::ios::binary);out.write(b.data(),b.size());out.close();bool caught=false;try{neo::loadModel(temp);}catch(const std::runtime_error&){caught=true;}assert(caught);};

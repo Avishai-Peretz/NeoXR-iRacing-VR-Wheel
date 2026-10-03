@@ -94,6 +94,7 @@ void initialize(State& s,const XrSessionCreateInfo* info){
  for(int j=0;j<2;j++){for(int d=0;d<5;d++)s.stickMap[j][d]=number((sticks[j]+std::wstring(directions[d])).c_str(),-1);
   s.stickPov[j]=number((sticks[j]+std::wstring(L"POV")).c_str(),-1);}
  s.knobStep=std::clamp(real(L"KnobStepDegrees",15),0.f,90.f)*neo::pi/180;
+ for(int c=neo::firstKnob;c<neo::firstStick;c++)s.animator.recentre[c]=std::abs(s.renderer.axes[c][2])<.9f;
  s.renderer.stickAngle=std::clamp(real(L"StickAngleDegrees",12),0.f,30.f)*neo::pi/180;
  s.renderer.flashStrength=std::clamp(real(L"FlashStrength",.75f),0.f,1.f);
  wchar_t sound[MAX_PATH]={};GetPrivateProfileStringW(L"Wheel",L"ClickSoundFile",L"",sound,MAX_PATH,ini().c_str());
