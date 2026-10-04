@@ -18,13 +18,12 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "click.hpp"
 #include "config.hpp"
 #include "controls.hpp"
 #include "edit.hpp"
 #include "input.hpp"
 #include "placement.hpp"
-#include "render.hpp"
+#include "wheel.hpp"
 
 // NeoXR is an OpenXR API layer: it forwards every call to the next layer or runtime and, for the one
 // configured game, adds a projection layer with the wheel to each submitted frame. It supports a single
@@ -179,7 +178,6 @@ private:
  void createRenderer(ID3D11Device* device,const neo::Config& settings);
  void openInput(const neo::Config& settings);
  void loadPlacement(const neo::Config& settings);
- void loadFeedback(const neo::Config& settings);
  void loadRecentering(const neo::Config& settings);
 
  // One frame, in order.
@@ -190,7 +188,6 @@ private:
  std::optional<std::array<XrView,2>> locateViews(XrSpace space,XrTime time);
  void calibrate(const std::array<XrView,2>& views,XrSpace space,XrTime time,bool save);
  XMMATRIX wheelToGame() const;
- std::array<neo::ControlPose,neo::controlCount> animate(const WheelInput& buttons);
  XrCompositionLayerProjectionView renderEye(int eye,const XrView& view,FXMMATRIX model,const std::array<neo::ControlPose,neo::controlCount>& poses);
  XrResult submit(const XrFrameEndInfo& frame,XrSpace space,const std::array<XrCompositionLayerProjectionView,2>& views);
 
@@ -206,16 +203,9 @@ private:
  uint32_t maxLayers_=0;
  bool stereo_=false,shouldRender_=false,failed_=false,visible_=true;
 
- Renderer renderer_;
- float brightness_=.8f;
-
+ neo::WheelRig rig_;
  WheelInput wheel_,buttons_;
  bool separateButtons_=false;
- int steeringAxis_=0;bool invertSteering_=false;float rotationDegrees_=900;
- neo::ControlMapping mapping_;
- neo::Animator animator_;
- ClickSound click_;
- float knobStep_=.26f;
  FrameClock clock_;
 
  neo::Placement placement_,placementBeforeEdit_;
@@ -238,7 +228,6 @@ Overlay::Overlay(XrSession session,const XrSessionCreateInfo& info):session_(ses
  createRenderer(device,settings);
  loadPlacement(settings);
  openInput(settings);
- loadFeedback(settings);
  loadRecentering(settings);
  int editKey=neo::parseKey(settings.text(L"EditKey",L"Tab"));
  editSensitivity_=settings.real(L"EditSensitivity",1,.1f,10.f);
@@ -271,18 +260,8 @@ void Overlay::createSwapchains(XrSystemId system){
 }
 
 void Overlay::createRenderer(ID3D11Device* device,const neo::Config& settings){
- std::wstring model=settings.text(L"Model",L"custom");
- std::filesystem::path assets;  // empty selects the procedural placeholder
- if(_wcsicmp(model.c_str(),L"custom")==0)assets=settings.path(L"AssetDirectory",L"assets");
- else if(_wcsicmp(model.c_str(),L"placeholder")!=0)throw std::runtime_error("Model must be custom or placeholder");
- renderer_.init(device,width_,height_,assets);
- renderer_.buttonTravel=settings.real(L"ButtonTravelMm",1.2f,0.f,5.f)/1000.f;
- renderer_.paddleAngle=settings.radians(L"PaddleAngleDegrees",7,0.f,25.f);
- renderer_.clutchAngle=settings.radians(L"ClutchAngleDegrees",12,0.f,40.f);
- renderer_.stickAngle=settings.radians(L"StickAngleDegrees",12,0.f,30.f);
- renderer_.flashStrength=settings.real(L"FlashStrength",.75f,0.f,1.f);
- brightness_=settings.real(L"Brightness",.8f,.1f,2.f);
- log(renderer_.detailed?"Custom wheel loaded: 23 parts with baked material textures":"Procedural placeholder selected");
+ rig_.init(device,width_,height_,settings);
+ log(rig_.renderer.detailed?"Custom wheel loaded: 23 parts with baked material textures":"Procedural placeholder selected");
 }
 
 void Overlay::loadPlacement(const neo::Config& settings){
@@ -290,22 +269,12 @@ void Overlay::loadPlacement(const neo::Config& settings){
  placement_.tiltDegrees=settings.real(L"TiltDegrees",0);placement_.yawDegrees=settings.real(L"YawDegrees",0);
  placement_.width=settings.real(L"WidthMm",310)/1000.f;
  placement_=placement_.clamped();
- rotationDegrees_=settings.real(L"RotationDegrees",900,90.f,2520.f);
 }
 
 void Overlay::openInput(const neo::Config& settings){
- steeringAxis_=settings.integer(L"SteeringAxis",0);invertSteering_=settings.flag(L"Invert",false);
  if(!wheel_.open(settings.integer(L"SteeringDevice",-1)))throw std::runtime_error("Configure SteeringDevice using NeoXR-Input first");
  int buttonDevice=settings.integer(L"ButtonDevice",-1);separateButtons_=buttonDevice>=0;
  if(separateButtons_&&!buttons_.open(buttonDevice))throw std::runtime_error("ButtonDevice cannot be opened");
- mapping_.load(settings);
-}
-
-void Overlay::loadFeedback(const neo::Config& settings){
- knobStep_=settings.radians(L"KnobStepDegrees",15,0.f,90.f);
- // Thumb rollers turn about an axle across the wheel face; they nudge per detent and settle back.
- for(int c=neo::firstKnob;c<neo::firstStick;c++)animator_.recentre[c]=std::abs(renderer_.axes[c][2])<.9f;
- click_.init(settings.real(L"ClickVolume",.5f,0.f,1.f),settings.path(L"ClickSoundFile"));
 }
 
 void Overlay::loadRecentering(const neo::Config& settings){
@@ -342,7 +311,7 @@ XrResult Overlay::endFrame(const XrFrameEndInfo& frame){
   if(!anchored_||recenter)calibrate(*views,space,frame.displayTime,recenter);
 
   XMMATRIX model=wheelToGame();
-  auto poses=animate(buttons);
+  auto poses=rig_.animate(buttons.valid?&buttons.state:nullptr,clock_.tick());
   std::array<XrCompositionLayerProjectionView,2> projected{};
   for(int eye=0;eye<2;eye++)projected[eye]=renderEye(eye,(*views)[eye],model,poses);
   return submit(frame,space,projected);
@@ -395,7 +364,7 @@ void Overlay::applyEdit(){
   case EditMode::Save:savePlacement();log("Edit mode: placement saved");break;
   case EditMode::Cancel:placement_=placementBeforeEdit_;log("Edit mode: cancelled, placement restored");break;
  }
- previousEditMode_=mode;renderer_.editMode=mode;
+ previousEditMode_=mode;rig_.renderer.editMode=mode;
 }
 
 std::optional<std::array<XrView,2>> Overlay::locateViews(XrSpace space,XrTime time){
@@ -422,18 +391,8 @@ void Overlay::calibrate(const std::array<XrView,2>& views,XrSpace space,XrTime t
 }
 
 XMMATRIX Overlay::wheelToGame() const{
- float scale=placement_.width/renderer_.modelWidth;
- float steering=neo::steering(wheel_.axis(steeringAxis_),rotationDegrees_,invertSteering_);
- return XMMatrixScaling(scale,scale,scale)*XMMatrixRotationZ(-steering)*placement_.relativeToHead()*XMLoadFloat4x4(&head_);
-}
-
-std::array<neo::ControlPose,neo::controlCount> Overlay::animate(const WheelInput& buttons){
- auto controls=mapping_.sample(buttons.valid?&buttons.state:nullptr);
- auto clicked=animator_.update(controls,clock_.tick(),knobStep_);
- if(clicked!=neo::Click::None)click_.play(clicked);
- std::array<neo::ControlPose,neo::controlCount> poses;
- for(int i=0;i<neo::controlCount;i++)poses[i]=animator_.pose(i);
- return poses;
+ float scale=placement_.width/rig_.renderer.modelWidth;
+ return XMMatrixScaling(scale,scale,scale)*XMMatrixRotationZ(-rig_.steering(wheel_.state))*placement_.relativeToHead()*XMLoadFloat4x4(&head_);
 }
 
 XrCompositionLayerProjectionView Overlay::renderEye(int eye,const XrView& view,FXMMATRIX model,const std::array<neo::ControlPose,neo::controlCount>& poses){
@@ -442,7 +401,7 @@ XrCompositionLayerProjectionView Overlay::renderEye(int eye,const XrView& view,F
  // The shader lights in model space, so it needs the eye position there too.
  const auto& p=view.pose.position;XMFLOAT3 cameraInModel;
  XMStoreFloat3(&cameraInModel,XMVector3TransformCoord(XMVectorSet(p.x,p.y,p.z,1),XMMatrixInverse(nullptr,model)));
- renderer_.draw(image.texture(),width_,height_,mvp,poses,cameraInModel,brightness_);
+ rig_.renderer.draw(image.texture(),width_,height_,mvp,poses,cameraInModel,rig_.brightness);
  image.release();
  XrCompositionLayerProjectionView out{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
  out.pose=view.pose;out.fov=view.fov;out.subImage.swapchain=eyes_[eye].chain.get();

@@ -28,7 +28,9 @@ struct ClickSound {
    s[i]=int16_t(std::clamp(v*volume,-1.f,1.f)*32767);}
   return wav(s);
  }
+ // Can be called again to change the sound; playback is stopped before the old buffers go away.
  void init(float volume,const std::filesystem::path& file){
+  PlaySoundW(nullptr,nullptr,0);for(auto& s:sounds)s.clear();
   if(volume<=0)return;
   if(!file.empty()){std::ifstream in(file,std::ios::binary);std::vector<char> bytes((std::istreambuf_iterator<char>(in)),{});
    if(bytes.size()<44||std::memcmp(bytes.data(),"RIFF",4)||std::memcmp(bytes.data()+8,"WAVE",4))throw std::runtime_error("ClickSoundFile must be a WAV file");
