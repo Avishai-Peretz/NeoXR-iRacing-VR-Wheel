@@ -26,6 +26,8 @@ struct Renderer {
  std::array<std::array<float,4>,neo::controlCount> pivots{},axes{};
  UINT count=0,stride=0;bool detailed=false;float modelWidth=.310f;
  float buttonTravel=.0012f,paddleAngle=.12f,clutchAngle=.21f,stickAngle=.2f,flashStrength=.75f;int editMode=0;
+ std::array<float,neo::controlCount> highlight{};  // 0..1 per control, tints it to point it out
+ std::array<float,4> background{0,0,0,0};  // linear RGBA; transparent for the VR composition layer
  void execute(){ComPtr<ID3D11CommandList> commands;HRESULT result=context->FinishCommandList(FALSE,&commands);
   if(FAILED(result))throw std::runtime_error("FinishCommandList failed, HRESULT="+std::to_string(static_cast<unsigned long>(result)));
   immediate->ExecuteCommandList(commands.Get(),TRUE);}
@@ -50,7 +52,8 @@ struct Renderer {
    cbuffer C:register(b0){row_major float4x4 mvp;float4 controls[18];float4 pivots[18];float4 axes[18];float4 camera;float4 motion;};
    struct V{float3 p:POSITION;float3 c:COLOR;float b:TEXCOORD;};
    struct P{float4 p:SV_POSITION;float3 c:COLOR;};
-   P vertexMain(V v){P o;o.p=mul(float4(v.p,1),mvp);o.c=v.c;if(v.b>=0){float4 s=controls[(int)v.b];o.c=lerp(o.c,1,saturate(s.x+s.y*motion.w));}return o;}
+   P vertexMain(V v){P o;o.p=mul(float4(v.p,1),mvp);o.c=v.c;if(v.b>=0){float4 s=controls[(int)v.b];o.c=lerp(o.c,1,saturate(s.x+s.y*motion.w));
+    o.c=lerp(o.c,float3(.1,.75,1),axes[(int)v.b].w*.7);}return o;}
    float4 pixelMain(P p):SV_TARGET{return float4(p.c,1);}
   )";
   const char* custom=R"(
@@ -59,12 +62,12 @@ struct Renderer {
    cbuffer C:register(b0){row_major float4x4 mvp;float4 controls[18];float4 pivots[18];float4 axes[18];float4 camera;float4 motion;};
    Texture2D baseTex:register(t0);Texture2D normalTex:register(t1);Texture2D ormTex:register(t2);SamplerState sampleTex:register(s0);
    struct V{float3 p:POSITION;float3 n:NORMAL;float2 uv:TEXCOORD0;float3 base:COLOR0;float3 emission:COLOR1;float2 factors:TEXCOORD1;float control:TEXCOORD2;};
-   struct P{float4 p:SV_POSITION;float3 local:TEXCOORD0;float3 n:TEXCOORD1;float2 uv:TEXCOORD2;float3 base:COLOR0;float3 emission:COLOR1;float2 factors:TEXCOORD3;float glow:TEXCOORD4;};
+   struct P{float4 p:SV_POSITION;float3 local:TEXCOORD0;float3 n:TEXCOORD1;float2 uv:TEXCOORD2;float3 base:COLOR0;float3 emission:COLOR1;float2 factors:TEXCOORD3;float glow:TEXCOORD4;float highlight:TEXCOORD5;};
    float3 rotX(float3 d,float a){float s=sin(a),c=cos(a);return float3(d.x,c*d.y-s*d.z,s*d.y+c*d.z);}
    float3 rotY(float3 d,float a){float s=sin(a),c=cos(a);return float3(c*d.x+s*d.z,d.y,-s*d.x+c*d.z);}
    float3 rotAxis(float3 d,float3 k,float a){float s=sin(a),c=cos(a);return d*c+cross(k,d)*s+k*dot(k,d)*(1-c);}
-   P vertexMain(V v){P o;o.glow=0;
-    if(v.control>=0){int c=(int)v.control;float4 s=controls[c];float3 pivot=pivots[c].xyz;float3 d=v.p-pivot;
+   P vertexMain(V v){P o;o.glow=0;o.highlight=0;
+    if(v.control>=0){int c=(int)v.control;float4 s=controls[c];float3 pivot=pivots[c].xyz;float3 d=v.p-pivot;o.highlight=axes[c].w;
      if(c<8)v.p.z-=s.x*motion.x;
      else if(c<12){float a=s.x*s.z*pivots[c].w;v.p=pivot+rotY(d,a);v.n=rotY(v.n,a);}
      else if(c<16){float3 k=axes[c].xyz;v.p=pivot+rotAxis(d,k,s.z);v.n=rotAxis(v.n,k,s.z);}
@@ -85,9 +88,11 @@ struct Renderer {
     float3 f0=lerp(float3(.04,.04,.04),color,metal);float3 lit=color*(.30+(1-metal*.75)*diffuse*.75)+f0*(.10+spec*1.8);
     // Fixed studio lighting; game cockpit lights are not available to an OpenXR composition layer.
     float3 result=lit+p.emission;result=lerp(result,float3(1,1,1),p.glow);result*=motion.z;
+    float rim=pow(1-saturate(abs(dot(normalize(p.n),view))),2);
+    result=lerp(saturate(result),float3(.1,.75,1),saturate(p.highlight)*(.85+rim*.15));
     // Edit mode outline: blue = move, orange = adjust, green = confirm save.
     if(motion.y>0){float3 tint=motion.y<1.5?float3(.1,.45,1):motion.y<2.5?float3(1,.45,.05):float3(.15,1,.3);
-     float rim=pow(1-saturate(abs(dot(normalize(p.n),view))),2);result=lerp(result,tint,saturate(.15+rim*.85));}
+     result=lerp(result,tint,saturate(.15+rim*.85));}
     return float4(result,1);}
   )";
   const char* shader=detailed?custom:placeholder;ComPtr<ID3DBlob> v,p,e;
@@ -120,6 +125,11 @@ struct Renderer {
   b={};b.ByteWidth=sizeof(Uniform);b.Usage=D3D11_USAGE_DEFAULT;b.BindFlags=D3D11_BIND_CONSTANT_BUFFER;hr(dev->CreateBuffer(&b,nullptr,&constants));
   D3D11_RASTERIZER_DESC r{};r.FillMode=D3D11_FILL_SOLID;r.CullMode=D3D11_CULL_NONE;r.DepthClipEnable=TRUE;hr(dev->CreateRasterizerState(&r,&raster));
   D3D11_DEPTH_STENCIL_DESC ds{};ds.DepthEnable=TRUE;ds.DepthWriteMask=D3D11_DEPTH_WRITE_MASK_ALL;ds.DepthFunc=D3D11_COMPARISON_LESS;hr(dev->CreateDepthStencilState(&ds,&depthState));
+  resize(width,height);
+ }
+ // The depth buffer must match the size of the targets passed to draw.
+ void resize(UINT width,UINT height){
+  dsv.Reset();depth.Reset();
   D3D11_TEXTURE2D_DESC t{};t.Width=width;t.Height=height;t.MipLevels=1;t.ArraySize=1;t.Format=DXGI_FORMAT_D32_FLOAT;t.SampleDesc.Count=1;t.BindFlags=D3D11_BIND_DEPTH_STENCIL;
   hr(dev->CreateTexture2D(&t,nullptr,&depth));hr(dev->CreateDepthStencilView(depth.Get(),nullptr,&dsv));
  }
@@ -139,12 +149,12 @@ struct Renderer {
    ", resourceFormat="+std::to_string(targetDesc.Format)+", bindFlags="+std::to_string(targetDesc.BindFlags)+
    ", arraySize="+std::to_string(targetDesc.ArraySize)+", samples="+std::to_string(targetDesc.SampleDesc.Count));
   context->ClearState();auto* rt=rtv.Get();context->OMSetRenderTargets(1,&rt,dsv.Get());
-  const float clear[4]={0,0,0,0};context->ClearRenderTargetView(rt,clear);context->ClearDepthStencilView(dsv.Get(),D3D11_CLEAR_DEPTH,1,0);
+  context->ClearRenderTargetView(rt,background.data());context->ClearDepthStencilView(dsv.Get(),D3D11_CLEAR_DEPTH,1,0);
   context->OMSetDepthStencilState(depthState.Get(),0);context->RSSetState(raster.Get());D3D11_VIEWPORT vp{0,0,float(w),float(h),0,1};context->RSSetViewports(1,&vp);
   context->IASetInputLayout(layout.Get());context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);UINT offset=0;auto* vb=vertices.Get();context->IASetVertexBuffers(0,1,&vb,&stride,&offset);
   context->VSSetShader(vs.Get(),nullptr,0);context->PSSetShader(ps.Get(),nullptr,0);
   Uniform u{};XMStoreFloat4x4(&u.mvp,mvp);
-  for(int i=0;i<neo::controlCount;i++){const auto& c=controls[i];u.controls[i]={c.press,c.flash,i<8||i>=12?c.a:i<10?paddleAngle:clutchAngle,c.b};u.pivots[i]={pivots[i][0],pivots[i][1],pivots[i][2],pivots[i][3]};u.axes[i]={axes[i][0],axes[i][1],axes[i][2],0};}
+  for(int i=0;i<neo::controlCount;i++){const auto& c=controls[i];u.controls[i]={c.press,c.flash,i<8||i>=12?c.a:i<10?paddleAngle:clutchAngle,c.b};u.pivots[i]={pivots[i][0],pivots[i][1],pivots[i][2],pivots[i][3]};u.axes[i]={axes[i][0],axes[i][1],axes[i][2],highlight[i]};}
   u.camera={cameraLocal.x,cameraLocal.y,cameraLocal.z,stickAngle};u.motion={buttonTravel,float(editMode),brightness,flashStrength};
   context->UpdateSubresource(constants.Get(),0,nullptr,&u,0,0);auto* cb=constants.Get();context->VSSetConstantBuffers(0,1,&cb);context->PSSetConstantBuffers(0,1,&cb);
   if(detailed){ID3D11ShaderResourceView* tex[]={base.Get(),normal.Get(),orm.Get()};context->PSSetShaderResources(0,3,tex);auto* sam=sampler.Get();context->PSSetSamplers(0,1,&sam);context->IASetIndexBuffer(indices.Get(),DXGI_FORMAT_R32_UINT,0);context->DrawIndexed(count,0,0);}

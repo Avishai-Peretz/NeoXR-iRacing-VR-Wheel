@@ -23,10 +23,16 @@ namespace NeoXR.Setup
                 Ui.AddRow(grid, row.Name, row.Value, row.Bind, row.Clear);
             }
             Ui.Stack(this, Ui.Paragraph(help), grid, pressed);
+            group.Changed += Edited;
         }
 
-        public override void Entering() => group.Load(Settings);
-        public override void Leaving() => group.Store(Settings);
+        protected override void Entering() => group.Load(Settings);
+        public override void Store() => group.Store(Settings);
+        public override void Leaving() { group.Stop(); Store(); }
+        public override int Highlight => group.Highlight;
+        public override string PreviewHint => group.Listening
+            ? "Press the glowing control on your wheel."
+            : "Point at a row to see where that control is. Press a control to check that the right part moves.";
 
         public override void OnInput(Snapshot input)
         {
@@ -88,14 +94,15 @@ namespace NeoXR.Setup
                 this.prefix = prefix;
                 Title = Ui.Text(title, bold: true);
                 Detect = Ui.Button("Calibrate", (s, e) => Start());
-                Clear = Ui.Button("Clear", (s, e) => { Cancel(); axis = -1; Show(); });
+                Clear = Ui.Button("Clear", (s, e) => { Cancel(); axis = -1; Show(); Changed?.Invoke(); });
             }
             public Label Title { get; }
             public Label Summary { get; } = Ui.Text("");
             public ProgressBar Position { get; } = new ProgressBar { Width = 260, Maximum = 100 };
             public Button Detect { get; }
             public Button Clear { get; }
-            bool calibrating;
+            public bool Calibrating { get; private set; }
+            public event Action Changed;
 
             public void Load(Settings s)
             {
@@ -104,20 +111,19 @@ namespace NeoXR.Setup
             }
             public void Store(Settings s)
             {
-                Cancel();
                 s.Set(prefix + "Axis", axis); s.Set(prefix + "Rest", rest, "0"); s.Set(prefix + "Full", full, "0");
             }
-            public void CopyFrom(Lever other) { Cancel(); axis = other.axis; rest = other.rest; full = other.full; Show(); }
+            public void CopyFrom(Lever other) { Cancel(); axis = other.axis; rest = other.rest; full = other.full; Show(); Changed?.Invoke(); }
 
-            void Start() { calibrating = true; baseline = null; Summary.Text = "Pull the lever all the way, then let go..."; Detect.Enabled = false; }
-            void Cancel() { calibrating = false; Detect.Enabled = true; }
+            void Start() { Calibrating = true; baseline = null; Summary.Text = "Pull the lever all the way, then let go..."; Detect.Enabled = false; }
+            public void Cancel() { Calibrating = false; Detect.Enabled = true; }
 
             // Released when Calibrate is pressed gives Rest; the furthest point reached gives Full.
             // Calibration finishes once the lever returns most of the way to rest.
             public void OnInput(InputState state)
             {
                 if (state == null) return;
-                if (calibrating) Calibrate(state);
+                if (Calibrating) Calibrate(state);
                 float span = full - rest;
                 Position.Value = axis >= 0 && Math.Abs(span) > 1 ? (int)Math.Round(100 * Math.Max(0, Math.Min(1, (state.Axis(axis) - rest) / span))) : 0;
             }
@@ -131,7 +137,7 @@ namespace NeoXR.Setup
                 int travel = extreme[best] - baseline[best];
                 if (Math.Abs(travel) < DetectThreshold || Math.Abs(now[best] - baseline[best]) > Math.Abs(travel) * 0.2) return;
                 axis = best; rest = baseline[best]; full = extreme[best];
-                Cancel(); Show();
+                Cancel(); Show(); Changed?.Invoke();
             }
 
             void Show() => Summary.Text = axis < 0 ? "Not set" : $"Axis {InputState.AxisNames[axis]}, released {rest:0}, pulled {full:0}";
@@ -156,19 +162,26 @@ namespace NeoXR.Setup
                 Ui.Paragraph("With the lever released, press Calibrate, pull the lever fully and let it go. " +
                              "If both levers drive one combined axis, calibrate the left one and use \"Right = same as left\"."),
                 grid);
+            left.Changed += Edited; right.Changed += Edited;
+            angle.ValueChanged += (s, e) => Edited();
         }
 
-        public override void Entering()
+        protected override void Entering()
         {
             left.Load(Settings); right.Load(Settings);
             angle.Value = (decimal)Math.Max(0, Math.Min(40, Settings.Real("ClutchAngleDegrees", 12)));
         }
-        public override void Leaving()
+        public override void Store()
         {
             left.Store(Settings); right.Store(Settings);
             Settings.Set("ClutchAngleDegrees", (float)angle.Value, "0");
         }
+        public override void Leaving() { left.Cancel(); right.Cancel(); Store(); }
         public override void OnInput(Snapshot input) { left.OnInput(input.Buttons); right.OnInput(input.Buttons); }
+        public override int Highlight => left.Calibrating ? ControlSlot.LeftClutch : right.Calibrating ? ControlSlot.RightClutch : ControlSlot.None;
+        public override string PreviewHint => Highlight != ControlSlot.None
+            ? "Pull the glowing lever all the way, then let it go."
+            : "Pull each clutch lever: the virtual one should travel exactly as far.";
     }
 
     /// <summary>Recenter and edit-mode controls, so one control can recenter both the game and the wheel.</summary>
@@ -194,14 +207,15 @@ namespace NeoXR.Setup
                 grid);
         }
 
-        public override void Entering()
+        protected override void Entering()
         {
             recenterKey.KeyName = Settings.Text("RecenterKey");
             editKey.KeyName = Settings.Text("EditKey", "Tab");
             group.Load(Settings);
             sensitivity.Value = (decimal)Math.Max(0.1f, Math.Min(10, Settings.Real("EditSensitivity", 1)));
         }
-        public override void Leaving()
+        public override void Leaving() { group.Stop(); Store(); }
+        public override void Store()
         {
             Settings.Set("RecenterKey", recenterKey.KeyName);
             Settings.Set("EditKey", editKey.KeyName);
@@ -261,19 +275,21 @@ namespace NeoXR.Setup
             Ui.AddRow(grid, Ui.Text("Button flash:"), flash, flashText);
             Ui.AddRow(grid, Ui.Text("Wheel brightness:"), brightness, brightnessText);
             Ui.Stack(this, Ui.Paragraph("0% click volume mutes the clicks; 0% flash turns the button highlight off."), grid);
-            foreach (var slider in new[] { volume, flash, brightness }) slider.ValueChanged += (s, e) => ShowValues();
+            foreach (var slider in new[] { volume, flash, brightness }) slider.ValueChanged += (s, e) => { ShowValues(); Edited(); };
         }
 
         static TrackBar Slider(int min, int max) => new TrackBar { Minimum = min, Maximum = max, TickFrequency = 10, Width = 300 };
 
-        public override void Entering()
+        public override string PreviewHint => "Press a push button to see the flash and hear the click with these settings.";
+
+        protected override void Entering()
         {
             volume.Value = Percent(Settings.Real("ClickVolume", 0.5f), volume);
             flash.Value = Percent(Settings.Real("FlashStrength", 0.75f), flash);
             brightness.Value = Percent(Settings.Real("Brightness", 0.8f), brightness);
             ShowValues();
         }
-        public override void Leaving()
+        public override void Store()
         {
             Settings.Set("ClickVolume", volume.Value / 100f, "0.##");
             Settings.Set("FlashStrength", flash.Value / 100f, "0.##");
@@ -295,7 +311,9 @@ namespace NeoXR.Setup
                 Ui.Paragraph("In VR: F8 recenters the wheel, F9 hides it, and the edit key lets you place it with the mouse."));
         }
 
-        public override void Entering()
+        public override string PreviewHint => "This is how the wheel will look and move in VR.";
+
+        protected override void Entering()
         {
             var changes = Settings.Changes.OrderBy(c => c.Key).Select(c => $"{c.Key} = {c.Value}").ToList();
             summary.Text = changes.Count > 0 ? string.Join(Environment.NewLine, changes) : "No changes.";

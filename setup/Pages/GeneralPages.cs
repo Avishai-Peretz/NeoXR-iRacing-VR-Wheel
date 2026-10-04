@@ -17,18 +17,20 @@ namespace NeoXR.Setup
             Ui.AddRow(grid, Ui.Text("Game executable:"), process);
             Ui.Stack(this,
                 Ui.Paragraph("Close the game before you start. Connect the wheelbase and the wheel. " +
-                             "Every page shows live input, so you can check each control as you go. " +
-                             "Nothing is saved until you press Finish."),
+                             "The wheel on the right is the same 3D wheel you will see in VR, and it moves with your real one, " +
+                             "so you can check each control as you set it up. Nothing is saved until you press Finish."),
                 grid,
                 Ui.Paragraph("Settings file: " + context.Settings.Path));
         }
 
-        public override void Entering()
+        public override string PreviewHint => "This is the wheel you will see in VR. Drag to look around it; double-click to reset the view.";
+
+        protected override void Entering()
         {
             enabled.Checked = Settings.Flag("Enabled", false);
             process.Text = Settings.Text("Process", "iRacingSim64DX11.exe");
         }
-        public override void Leaving()
+        public override void Store()
         {
             Settings.Set("Enabled", enabled.Checked);
             Settings.Set("Process", process.Text.Trim());
@@ -61,9 +63,10 @@ namespace NeoXR.Setup
         }
 
         public override bool CanContinue => steering.SelectedIndex >= 0;
+        public override string PreviewHint => "Turn the wheel and press a button: if the preview reacts, the devices are right.";
 
-        public override void Entering() => Fill(Settings.Integer("SteeringDevice", -1), Settings.Integer("ButtonDevice", -1));
-        public override void Leaving()
+        protected override void Entering() => Fill(Settings.Integer("SteeringDevice", -1), Settings.Integer("ButtonDevice", -1));
+        public override void Store()
         {
             Settings.Set("SteeringDevice", steering.SelectedIndex);
             Settings.Set("ButtonDevice", buttons.SelectedIndex - 1);
@@ -85,7 +88,7 @@ namespace NeoXR.Setup
             Apply();
         }
 
-        void Apply() => Context.Devices.Use(steering.SelectedIndex, buttons.SelectedIndex - 1);
+        void Apply() { Context.Devices.Use(steering.SelectedIndex, buttons.SelectedIndex - 1); Edited(); }
 
         static string Describe(InputState state)
         {
@@ -124,17 +127,22 @@ namespace NeoXR.Setup
                 Ui.Paragraph("Centre the wheel, press Detect, then turn the wheel clearly to the RIGHT. " +
                              "Rotation must match the full lock-to-lock angle set in SimPro (e.g. 900)."),
                 grid);
+            axis.SelectedIndexChanged += (s, e) => Edited();
+            invert.CheckedChanged += (s, e) => Edited();
+            rotation.ValueChanged += (s, e) => Edited();
         }
 
-        public override void Entering()
+        public override string PreviewHint => "Turn the wheel: the preview must turn the same way and just as far.";
+
+        protected override void Entering()
         {
             axis.SelectedIndex = Math.Max(0, Math.Min(7, Settings.Integer("SteeringAxis", 0)));
             invert.Checked = Settings.Flag("Invert", false);
             rotation.Value = (decimal)Math.Max(90, Math.Min(2520, Settings.Real("RotationDegrees", 900)));
         }
-        public override void Leaving()
+        public override void Leaving() { detecting = false; detect.Enabled = true; Store(); }
+        public override void Store()
         {
-            detecting = false; detect.Enabled = true;
             Settings.Set("SteeringAxis", axis.SelectedIndex);
             Settings.Set("Invert", invert.Checked);
             Settings.Set("RotationDegrees", (float)rotation.Value, "0");

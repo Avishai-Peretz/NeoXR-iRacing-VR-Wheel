@@ -14,6 +14,8 @@ namespace neo {
 class Config {
 public:
  explicit Config(std::filesystem::path folder):folder_(std::move(folder)),file_((folder_/L"NeoXR.ini").wstring()) {}
+ // Reads `file` but still resolves relative paths against `folder`, e.g. for a draft copy of the settings.
+ Config(std::filesystem::path folder,const std::filesystem::path& file):folder_(std::move(folder)),file_(file.wstring()) {}
 
  int integer(const std::wstring& key,int fallback) const {
   return int(GetPrivateProfileIntW(section,key.c_str(),fallback,file_.c_str()));

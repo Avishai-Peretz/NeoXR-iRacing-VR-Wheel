@@ -13,6 +13,7 @@ namespace NeoXR.Setup
 
         readonly NativeState state;
         internal InputState(NativeState state) { this.state = state; }
+        internal NativeState Native => state;
 
         public int Axis(int index) => state.Axes[index];
         public bool Button(int index) => index >= 0 && index < 128 && (state.Buttons[index] & 0x80) != 0;
@@ -63,7 +64,7 @@ namespace NeoXR.Setup
         [DllImport(Bridge)] static extern void neo_close(IntPtr device);
     }
 
-    /// <summary>Mirror of NeoInputState in input_bridge.cpp.</summary>
+    /// <summary>Mirror of NeoInputState in bridge.hpp.</summary>
     [StructLayout(LayoutKind.Sequential)]
     struct NativeState
     {
