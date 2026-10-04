@@ -28,6 +28,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed. The working installation was not changed.' }
     & cmake --install build --config Release
     if ($LASTEXITCODE -ne 0) { throw 'Packaging failed. The working installation was not changed.' }
+    & dotnet build setup\NeoXR.Setup.csproj -c Release -nologo
+    if ($LASTEXITCODE -ne 0) { throw 'Setup wizard build failed. The working installation was not changed.' }
     $package = (Resolve-Path -LiteralPath 'build/package').Path
     if ($package -eq $destination) { throw 'Extract this update into a separate source folder from the working installation.' }
     $backup = Join-Path $destination ('backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
@@ -38,6 +40,8 @@ try {
     if (Test-Path -LiteralPath $assets) { Copy-Item -LiteralPath $assets -Destination $backup -Recurse }
     if (!(Test-Path -LiteralPath $assets)) { New-Item -ItemType Directory -Path $assets | Out-Null }
     Copy-Item -Path (Join-Path $package 'assets/*') -Destination $assets -Recurse -Force
+    foreach ($tool in 'NeoXR-Input.exe', 'NeoXR-InputBridge.dll', 'README.md') { Copy-Item -LiteralPath (Join-Path $package $tool) -Destination $destination -Force }
+    Copy-Item -Path 'setup\bin\Release\NeoXR-Setup.exe*' -Destination $destination -Force
     # Replace the DLL last, after all assets are in place. Keep INI and registered manifest.
     Copy-Item -LiteralPath (Join-Path $package 'NeoXR.dll') -Destination $destination -Force
     Write-Host 'NeoXR 0.2.1 installed. Existing INI settings and registration were preserved.'
