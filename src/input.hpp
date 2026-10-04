@@ -5,6 +5,10 @@
 #include <vector>
 #include <string>
 using Microsoft::WRL::ComPtr;
+// Axis numbers as listed by NeoXR-Input: 0 X, 1 Y, 2 Z, 3 Rx, 4 Ry, 5 Rz, 6-7 sliders.
+inline long axisValue(const DIJOYSTATE2& s,int n){switch(n){case 1:return s.lY;case 2:return s.lZ;case 3:return s.lRx;
+ case 4:return s.lRy;case 5:return s.lRz;case 6:return s.rglSlider[0];case 7:return s.rglSlider[1];default:return s.lX;}}
+inline bool buttonHeld(const DIJOYSTATE2& s,int n){return n>=0&&n<128&&(s.rgbButtons[n]&128);}
 struct WheelInput {
  ComPtr<IDirectInput8W> api; ComPtr<IDirectInputDevice8W> device;
  HWND window=nullptr;
@@ -35,7 +39,6 @@ struct WheelInput {
   DIJOYSTATE2 next{};if(FAILED(device->GetDeviceState(sizeof(next),&next))){state={};return false;}
   state=next;valid=true;return true;
  }
- long axis(int n)const {switch(n){case 1:return state.lY;case 2:return state.lZ;case 3:return state.lRx;
- case 4:return state.lRy;case 5:return state.lRz;case 6:return state.rglSlider[0];case 7:return state.rglSlider[1];default:return state.lX;}}
+ long axis(int n)const {return axisValue(state,n);}
  ~WheelInput(){if(device)device->Unacquire();device.Reset();if(window)DestroyWindow(window);}
 };
