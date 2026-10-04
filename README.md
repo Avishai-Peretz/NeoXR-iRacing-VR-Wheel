@@ -11,10 +11,10 @@ This update adds Avi's modeled wheel to the existing Windows D3D11/OpenXR overla
 Close iRacing. Extract this source archive into a **new folder**, then open PowerShell in the extracted `NeoXR` folder and run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Update.ps1 -InstalledPackage "D:\Downloads\NeoXR-0.1-source\NeoXR\build\package"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Update.ps1
 ```
 
-Change the path if the working package is elsewhere. The script builds x64 Release, runs tests, installs into the new source's build/package folder, backs up the old DLL and settings, then copies the new assets and DLL into the existing package. Your INI and registered manifest are retained. No re-registration is needed. It stops before updating if compilation or tests fail.
+The working installation defaults to `C:\NeoXR`; pass `-InstalledPackage <folder>` if yours is elsewhere. The script builds x64 Release, runs tests, installs into the new source's build/package folder, backs up the old DLL and settings, then copies the new assets and DLL into the existing package. Your INI and registered manifest are retained. No re-registration is needed. It stops before updating if compilation or tests fail.
 
 To place the wheel with the mouse, press **Tab** in iRacing. The wheel turns blue: left-drag moves it, right-drag or the scroll wheel moves it closer or farther. **M** switches to an orange size/rotate mode: left-drag resizes, right-drag pitches and yaws. **Esc** turns it green; **Enter** saves to NeoXR.ini and a second **Esc** cancels. While editing, NeoXR captures the mouse and the edit keys; five quick Esc presses release them. Change the key with `EditKey` and the speed with `EditSensitivity`.
 

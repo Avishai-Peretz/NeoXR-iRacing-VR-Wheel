@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$InstalledPackage)
+param([string]$InstalledPackage = 'C:\NeoXR')
 $ErrorActionPreference = 'Stop'
 $destination = (Resolve-Path -LiteralPath $InstalledPackage).Path
 $expectedPackage = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'build/package')).TrimEnd('\', '/')
