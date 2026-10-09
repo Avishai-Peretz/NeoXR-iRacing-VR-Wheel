@@ -8,7 +8,11 @@ This update adds Avi's modeled wheel to the existing Windows D3D11/OpenXR overla
 
 ## Install
 
+Run `NeoXR-Setup-<version>.exe` (close iRacing first). It installs to `C:\NeoXR`, registers the OpenXR layer, adds NeoXR to Apps & Features and the Start menu, and keeps an existing `NeoXR.ini` on upgrade and uninstall. At the end it opens the setup wizard.
+
 **NeoXR Setup** (Start menu, or `NeoXR-Setup.exe` in the install folder) walks through every setting with live input: pick the wheelbase and button device, detect the steering axis, press-to-bind the push buttons, paddles, knobs, rollers and joysticks, calibrate the clutch levers by pulling them, choose recenter and edit keys, and set click volume, flash and brightness. Rows turn green while their control is held, and nothing is written until **Finish**. Run it again any time; restart iRacing to apply changes.
+
+To build the installer: `powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Installer.ps1` (needs Visual Studio 2022, the .NET SDK and Inno Setup 6: `winget install JRSoftware.InnoSetup`). Output: `build\installer\NeoXR-Setup-<version>.exe`.
 
 ## Update the working installation
 
