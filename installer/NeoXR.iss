@@ -35,6 +35,7 @@ Source: "{#Package}\NeoXR.json";            DestDir: "{app}"; Flags: ignoreversi
 Source: "{#Package}\NeoXR-Input.exe";       DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Package}\NeoXR-InputBridge.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Package}\README.md";             DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Package}\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Package}\assets\*";              DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs
 Source: "{#SetupApp}\NeoXR-Setup.exe";      DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SetupApp}\NeoXR-Setup.exe.config"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
@@ -44,13 +45,17 @@ Source: "{#Package}\NeoXR.ini";             DestDir: "{app}"; Flags: onlyifdoesn
 [Registry]
 Root: HKLM64; Subkey: "SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit"; ValueType: dword; ValueName: "{app}\NeoXR.json"; ValueData: 0; Flags: uninsdeletevalue
 
+[InstallDelete]
+Type: files; Name: "{app}\assets\wheel.neo"
+
 [Icons]
-Name: "{autoprograms}\NeoXR\NeoXR Setup"; Filename: "{app}\NeoXR-Setup.exe"
+Name: "{autoprograms}\NeoXR\NeoXR Control Center"; Filename: "{app}\NeoXR-Setup.exe"
+Name: "{autodesktop}\NeoXR"; Filename: "{app}\NeoXR-Setup.exe"; WorkingDir: "{app}"
 Name: "{autoprograms}\NeoXR\NeoXR Input Viewer"; Filename: "{app}\NeoXR-Input.exe"
 Name: "{autoprograms}\NeoXR\NeoXR folder"; Filename: "{app}"
 
 [Run]
-Filename: "{app}\NeoXR-Setup.exe"; Description: "Set up the wheel now"; Flags: postinstall nowait skipifsilent runasoriginaluser
+Filename: "{app}\NeoXR-Setup.exe"; Description: "Open NeoXR Control Center"; Flags: postinstall nowait skipifsilent runasoriginaluser
 
 [Code]
 const Game = 'iRacingSim64DX11.exe';

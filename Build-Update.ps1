@@ -18,6 +18,7 @@ if (Test-Path -LiteralPath $settings) {
     if ($match.Success) { $processName = [IO.Path]::GetFileNameWithoutExtension($match.Groups[1].Value) }
 }
 if (Get-Process -Name $processName -ErrorAction SilentlyContinue) { throw 'Close the simulator before updating NeoXR.' }
+if (Get-Process -Name 'NeoXR-Setup' -ErrorAction SilentlyContinue) { throw 'Close the NeoXR app before updating it.' }
 Push-Location $PSScriptRoot
 try {
     & cmake -S . -B build -A x64
@@ -35,16 +36,24 @@ try {
     $backup = Join-Path $destination ('backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
     New-Item -ItemType Directory -Path $backup | Out-Null
     Copy-Item -LiteralPath (Join-Path $destination 'NeoXR.dll') -Destination $backup
+    foreach ($previousTool in 'NeoXR-Setup.exe', 'NeoXR-Setup.exe.config', 'NeoXR-InputBridge.dll', 'NeoXR-Input.exe') {
+        $previousPath = Join-Path $destination $previousTool
+        if (Test-Path -LiteralPath $previousPath) { Copy-Item -LiteralPath $previousPath -Destination $backup }
+    }
     if (Test-Path -LiteralPath $settings) { Copy-Item -LiteralPath $settings -Destination $backup }
     $assets = Join-Path $destination 'assets'
     if (Test-Path -LiteralPath $assets) { Copy-Item -LiteralPath $assets -Destination $backup -Recurse }
     if (!(Test-Path -LiteralPath $assets)) { New-Item -ItemType Directory -Path $assets | Out-Null }
     Copy-Item -Path (Join-Path $package 'assets/*') -Destination $assets -Recurse -Force
-    foreach ($tool in 'NeoXR-Input.exe', 'NeoXR-InputBridge.dll', 'README.md') { Copy-Item -LiteralPath (Join-Path $package $tool) -Destination $destination -Force }
+    foreach ($tool in 'NeoXR-Input.exe', 'NeoXR-InputBridge.dll', 'README.md', 'THIRD-PARTY-NOTICES.txt') { Copy-Item -LiteralPath (Join-Path $package $tool) -Destination $destination -Force }
     Copy-Item -Path 'setup\bin\Release\NeoXR-Setup.exe*' -Destination $destination -Force
+    Copy-Item -LiteralPath (Join-Path $package 'Install-Desktop-Shortcut.ps1') -Destination $destination -Force
     # Replace the DLL last, after all assets are in place. Keep INI and registered manifest.
     Copy-Item -LiteralPath (Join-Path $package 'NeoXR.dll') -Destination $destination -Force
-    Write-Host 'NeoXR 0.2.1 installed. Existing INI settings and registration were preserved.'
+    $legacyModel = Join-Path $assets 'wheel.neo'
+    if (Test-Path -LiteralPath $legacyModel) { Remove-Item -LiteralPath $legacyModel }
+    & (Join-Path $PSScriptRoot 'Install-Desktop-Shortcut.ps1') -AppDirectory $destination
+    Write-Host 'NeoXR 0.3.0 installed. Existing INI settings and registration were preserved. Future model/settings changes reload live.'
     Write-Host ('Backup: ' + $backup)
     Write-Host 'Launch iRacing in OpenXR and press F8. Set Model=placeholder in the [Wheel] INI section to restore the original visual.'
 } finally { Pop-Location }
