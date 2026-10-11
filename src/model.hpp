@@ -8,11 +8,35 @@
 #include <cstdint>
 #include <cstring>
 #include "animation.hpp"
+#include <string>
+#include <memory>
 namespace neo {
 struct ModelVertex {float p[3],n[3],uv[2],base[3],emission[3],factors[2],control;};
 static_assert(sizeof(ModelVertex)==68,"Asset vertex layout must match converter");
+struct FileStamp {
+ bool exists=false; uintmax_t size=0; std::filesystem::file_time_type time{};
+ bool operator==(const FileStamp& b) const {return exists==b.exists&&size==b.size&&time==b.time;}
+ bool operator!=(const FileStamp& b) const {return !(*this==b);}
+};
+inline FileStamp fileStamp(const std::filesystem::path& p){
+ std::error_code ec;FileStamp s;s.exists=std::filesystem::is_regular_file(p,ec);if(!s.exists)return s;
+ s.size=std::filesystem::file_size(p,ec);if(ec)return {};s.time=std::filesystem::last_write_time(p,ec);return ec?FileStamp{}:s;
+}
+struct Dependency {std::filesystem::path path;FileStamp stamp;};
+// Encoded PNG/JPEG/etc or uncompressed embedded RGBA. Kept in memory until GPU upload.
+struct ModelImage {std::vector<unsigned char> bytes;unsigned width=0,height=0;};
+struct ModelMaterial {
+ // base, normal, metallic, roughness, occlusion, emission. Missing images use neutral 1x1 textures.
+ std::array<std::shared_ptr<ModelImage>,6> images{};
+ std::array<int,6> channels{{-1,-1,0,0,0,-1}};
+ std::array<int,2> wrap{{0,0}};
+ unsigned uvSet=0;
+};
+struct ModelPart {uint32_t first=0,count=0,material=0;std::string name;};
 struct Model {std::vector<ModelVertex> vertices;std::vector<uint32_t> indices;float width=.310f;
- std::array<std::array<float,4>,controlCount> pivots{},axes{};};
+ std::array<std::array<float,4>,controlCount> pivots{},axes{};
+ std::vector<ModelMaterial> materials;std::vector<ModelPart> parts;std::vector<Dependency> dependencies;
+};
 // Round knobs and joysticks face +Z. Thumb rollers are long cylinders lying in the face plane,
 // so an elongated knob spins about its longest principal axis instead.
 // The axis centre is the least-squares meeting point of the side-wall normals.
@@ -41,25 +65,7 @@ inline void fitPivots(Model& m){
   m.pivots[c]={float(p[0]),float(p[1]),float(c<firstStick?p[2]:back),1};m.axes[c]={float(axis[0]),float(axis[1]),float(axis[2]),0};
  }
 }
-inline Model loadModel(const std::filesystem::path& path){
- std::ifstream in(path,std::ios::binary|std::ios::ate);if(!in)throw std::runtime_error("Cannot open wheel.neo; reinstall assets or set Model=placeholder");
- const auto size=in.tellg();in.seekg(0);char magic[8]{};uint32_t version=0,vc=0,ic=0;Model m;
- auto read=[&](void* data,size_t bytes){if(!in.read(static_cast<char*>(data),std::streamsize(bytes)))throw std::runtime_error("Truncated wheel.neo");};
- read(magic,8);read(&version,4);read(&vc,4);read(&ic,4);read(&m.width,4);
- if(std::memcmp(magic,"NEOWHL2\0",8)||version!=2||!vc||vc>2000000||!ic||ic>6000000||ic%3||!std::isfinite(m.width)||m.width<.1f||m.width>1.f)
- throw std::runtime_error("Invalid wheel.neo header");
- const uint64_t expected=88ull+uint64_t(vc)*sizeof(ModelVertex)+uint64_t(ic)*4;
- if(size<0||uint64_t(size)!=expected)throw std::runtime_error("Invalid wheel.neo length");
- read(m.pivots.data()+8,64);for(auto& p:m.pivots)for(float f:p)if(!std::isfinite(f)||std::abs(f)>10)throw std::runtime_error("Invalid paddle pivot");
- m.vertices.resize(vc);m.indices.resize(ic);read(m.vertices.data(),m.vertices.size()*sizeof(ModelVertex));read(m.indices.data(),m.indices.size()*4);
- for(const auto& v:m.vertices){
-  // Explicit field checks avoid pointer arithmetic across struct subobjects.
-  auto finite=[](const float* f,size_t n){for(size_t i=0;i<n;i++)if(!std::isfinite(f[i]))return false;return true;};
-  if(!finite(v.p,3)||!finite(v.n,3)||!finite(v.uv,2)||!finite(v.base,3)||!finite(v.emission,3)||!finite(v.factors,2)||!std::isfinite(v.control)||
-   v.control< -1||v.control>=controlCount||std::floor(v.control)!=v.control)throw std::runtime_error("Invalid wheel vertex");
-  for(float p:v.p)if(std::abs(p)>10)throw std::runtime_error("Wheel vertex out of bounds");
- }
- for(auto i:m.indices)if(i>=vc)throw std::runtime_error("Wheel index out of bounds");
- fitPivots(m);return m;
-}
+// Native import; names determine controls, never geometry deformation.
+Model loadModel(const std::filesystem::path& path);
+int controlSlot(const std::string& name);
 }

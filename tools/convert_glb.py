@@ -5,9 +5,7 @@ This deliberately rejects unsupported files rather than silently losing their ap
 """
 import argparse,json,math,struct
 from pathlib import Path
-# Control slots 8.. in runtime order (src/animation.hpp). 'joistick_right' matches the model's node name.
-CONTROLS=['left_shifter','right_shifter','left_clutch_lever','right_clutch_lever',
- 'B9_B10_rotary_knob','B11_B12_rotary_knob','B37_B38_rotary_knob','B39_B40_rotary_knob','joystick_left','joistick_right']
+import gltf_asset
 
 def matmul(a,b):return [[sum(a[i][k]*b[k][j] for k in range(4)) for j in range(4)] for i in range(4)]
 def local(node):
@@ -41,7 +39,7 @@ def convert(source,destination):
   fmt='<'+kind*count;width=struct.calcsize(fmt);stride=v.get('byteStride',width);start=v.get('byteOffset',0)+a.get('byteOffset',0)
   if stride<width or start+(a['count']-1)*stride+width>len(binary):raise ValueError('Accessor outside buffer')
   return [struct.unpack_from(fmt,binary,start+k*stride) for k in range(a['count'])]
- atlas={};vertices=[];indices=[];parts=[];pivots=[[0,0,0,1] for _ in range(4)]
+ atlas={};vertices=[];indices=[];parts=[]
  def texture(info,kind):
   if not info:raise ValueError('Prepared GLB requires '+kind+' texture')
   if info.get('extensions'):raise ValueError('Texture transforms unsupported; bake them first')
@@ -52,11 +50,7 @@ def convert(source,destination):
  def walk(index,parent):
   node=doc['nodes'][index];matrix=matmul(parent,local(node))
   if 'mesh' in node:
-   name=node.get('name','part_'+str(index));control=-1
-   if name.startswith('B') and name.endswith('_push_btn'):control=int(name.split('_')[0][1:])-1
-   for k,n in enumerate(CONTROLS):
-    if name==n:control=8+k
-   if control not in range(-1,18):raise ValueError('Invalid control number')
+   name=node.get('name','part_'+str(index));control=gltf_asset.control_slot(name)
    nm,det=normal_matrix(matrix);start=len(indices);part_points=[]
    for prim in doc['meshes'][node['mesh']]['primitives']:
     if prim.get('mode',4)!=4 or prim.get('targets'):raise ValueError('Only static triangles supported')
@@ -81,30 +75,15 @@ def convert(source,destination):
      for k in range(0,len(ix),3):ix[k+1],ix[k+2]=ix[k+2],ix[k+1]
     indices.extend(v+voffset for v in ix)
    bounds=[[min(p[i] for p in part_points) for i in range(3)],[max(p[i] for p in part_points) for i in range(3)]]
-   if 8<=control<12:
-    # Approximate hinge: inner edge, middle height, front edge. Calibrate in Blender for precision.
-    inner=min([bounds[0][0],bounds[1][0]],key=abs);pivots[control-8]=[inner,(bounds[0][1]+bounds[1][1])/2,bounds[1][2],1 if control in [8,10] else -1]
    parts.append({'name':name,'control':control,'index_start':start,'index_count':len(indices)-start,'bounds':bounds})
   for child in node.get('children',[]):walk(child,matrix)
  identity=[[1 if i==j else 0 for j in range(4)] for i in range(4)]
  for index in doc['scenes'][doc.get('scene',0)]['nodes']:walk(index,identity)
- if not vertices or len(vertices)>2_000_000 or len(indices)>6_000_000:raise ValueError('Asset exceeds runtime limits')
- width=max(v[0] for v in vertices)-min(v[0] for v in vertices)
- dest=Path(destination);dest.mkdir(parents=True,exist_ok=True)
- with (dest/'wheel.neo').open('wb') as f:
-  f.write(struct.pack('<8sIIIf',b'NEOWHL2\0',2,len(vertices),len(indices),width))
-  for p in pivots:f.write(struct.pack('<4f',*p))
-  for v in vertices:f.write(struct.pack('<17f',*v))
-  f.write(struct.pack('<'+str(len(indices))+'I',*indices))
+ images={}
  for kind,index in atlas.items():
   image=doc['images'][index]
   if image.get('mimeType')!='image/png' or 'bufferView' not in image:raise ValueError('Only embedded PNG supported')
-  v=doc['bufferViews'][image['bufferView']];start=v.get('byteOffset',0);image_data=binary[start:start+v['byteLength']]
-  if not image_data.startswith(b'\x89PNG\r\n\x1a\n'):raise ValueError('Invalid PNG')
-  (dest/('wheel-'+kind+'.png')).write_bytes(image_data)
- report={'source':str(source),'vertex_count':len(vertices),'triangle_count':len(indices)//3,'width_m':width,'parts':parts,'paddle_pivots':pivots}
- (dest/'wheel-parts.json').write_text(json.dumps(report,indent=2))
- print('Converted',len(parts),'parts,',len(indices)//3,'triangles, width',round(width*1000,3),'mm')
- return report
+  v=doc['bufferViews'][image['bufferView']];start=v.get('byteOffset',0);images[kind]=binary[start:start+v['byteLength']]
+ return gltf_asset.write(destination,vertices,indices,parts,images,source)
 if __name__=='__main__':
  p=argparse.ArgumentParser();p.add_argument('glb');p.add_argument('output_directory');a=p.parse_args();convert(a.glb,a.output_directory)
