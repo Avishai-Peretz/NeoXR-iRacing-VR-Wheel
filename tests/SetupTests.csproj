@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <StartupObject>NeoXR.Setup.SetupTests</StartupObject>
+    <OutputPath>../build/setup-tests/</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Compile Include="../setup/*.cs" />
+    <Compile Include="../setup/Pages/*.cs" />
+    <Compile Include="SetupTests.cs" />
+  </ItemGroup>
+</Project>

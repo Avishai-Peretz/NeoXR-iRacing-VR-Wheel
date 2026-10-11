@@ -83,8 +83,13 @@ namespace NeoXR.Setup
             var names = InputDevice.List().Select((name, i) => $"{i}: {name}").ToArray();
             steering.Items.Clear(); steering.Items.AddRange(names);
             buttons.Items.Clear(); buttons.Items.Add(SameDevice); buttons.Items.AddRange(names);
-            steering.SelectedIndex = steeringIndex < names.Length ? steeringIndex : -1;
-            buttons.SelectedIndex = buttonIndex + 1 < buttons.Items.Count ? buttonIndex + 1 : 0;
+            // Keep saved indices visible even when hardware is unplugged or the bridge is missing.
+            int largest = Math.Max(steeringIndex, buttonIndex);
+            for (int i = names.Length; i <= Math.Min(largest, 255); i++) {
+                steering.Items.Add($"{i}: Unavailable device"); buttons.Items.Add($"{i}: Unavailable device");
+            }
+            steering.SelectedIndex = steeringIndex >= 0 && steeringIndex < steering.Items.Count ? steeringIndex : -1;
+            buttons.SelectedIndex = buttonIndex >= -1 && buttonIndex + 1 < buttons.Items.Count ? buttonIndex + 1 : 0;
             Apply();
         }
 
@@ -105,6 +110,9 @@ namespace NeoXR.Setup
         readonly ComboBox axis = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
         readonly CheckBox invert = new CheckBox { Text = "Invert", AutoSize = true };
         readonly NumericUpDown rotation = new NumericUpDown { Minimum = 90, Maximum = 2520, Increment = 10, Width = 90 };
+        readonly NumericUpDown zeroOffset = new NumericUpDown { Name = "SteeringZeroOffset", Minimum = -1260, Maximum = 1260, DecimalPlaces = 2, Increment = .1m, Width = 90 };
+        readonly Button setZero;
+        InputState lastSteering;
         readonly ProgressBar position = new ProgressBar { Minimum = 0, Maximum = 20000, Width = 380 };
         readonly Label angle = Ui.Text(""), status = Ui.Text("");
         readonly Button detect;
@@ -115,12 +123,18 @@ namespace NeoXR.Setup
         {
             axis.Items.AddRange(InputState.AxisNames);
             detect = Ui.Button("Detect", (s, e) => StartDetect());
+            setZero = Ui.Button("Set current as zero", (s, e) => {
+                if (lastSteering != null) zeroOffset.Value = (decimal)Math.Round(ReadDegrees(lastSteering), 2);
+            });
+            setZero.Enabled = false;
             var grid = Ui.Grid(3);
             var axisRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0), WrapContents = false };
             axisRow.Controls.AddRange(new Control[] { axis, detect });
             Ui.AddRow(grid, Ui.Text("Axis:"), axisRow);
             Ui.AddRow(grid, null, invert);
             Ui.AddRow(grid, Ui.Text("Rotation (degrees):"), rotation);
+            Ui.AddRow(grid, Ui.Text("Zero offset (degrees):"), zeroOffset, setZero);
+            Ui.AddRow(grid, null, Ui.Text("Virtual angle = reading minus offset. A 3 degree offset makes a 3 degree reading show 0."));
             Ui.AddRow(grid, Ui.Text("Live:"), position, angle);
             Ui.AddRow(grid, null, status);
             Ui.Stack(this,
@@ -130,6 +144,7 @@ namespace NeoXR.Setup
             axis.SelectedIndexChanged += (s, e) => Edited();
             invert.CheckedChanged += (s, e) => Edited();
             rotation.ValueChanged += (s, e) => Edited();
+            zeroOffset.ValueChanged += (s, e) => Edited();
         }
 
         public override string PreviewHint => "Turn the wheel: the preview must turn the same way and just as far.";
@@ -139,6 +154,8 @@ namespace NeoXR.Setup
             axis.SelectedIndex = Math.Max(0, Math.Min(7, Settings.Integer("SteeringAxis", 0)));
             invert.Checked = Settings.Flag("Invert", false);
             rotation.Value = (decimal)Math.Max(90, Math.Min(2520, Settings.Real("RotationDegrees", 900)));
+            zeroOffset.Value = (decimal)Math.Max(-1260, Math.Min(1260, Settings.Real("SteeringZeroOffsetDegrees", 0)));
+            lastSteering = null; setZero.Enabled = false;
         }
         public override void Leaving() { detecting = false; detect.Enabled = true; Store(); }
         public override void Store()
@@ -146,18 +163,24 @@ namespace NeoXR.Setup
             Settings.Set("SteeringAxis", axis.SelectedIndex);
             Settings.Set("Invert", invert.Checked);
             Settings.Set("RotationDegrees", (float)rotation.Value, "0");
+            Settings.Set("SteeringZeroOffsetDegrees", (float)zeroOffset.Value, "0.##");
         }
 
         public override void OnInput(Snapshot input)
         {
             var state = input.Steering;
+            lastSteering = state; setZero.Enabled = state != null;
             if (state == null) { status.Text = "The steering device is not responding."; return; }
             if (detecting && baseline == null) baseline = Enumerable.Range(0, 8).Select(state.Axis).ToArray();
             else if (detecting) Detect(state);
             int raw = state.Axis(axis.SelectedIndex) * (invert.Checked ? -1 : 1);
             position.Value = Math.Max(0, Math.Min(20000, raw + 10000));
-            angle.Text = $"{raw / 10000f * (float)rotation.Value / 2:0}°";
+            float reading = ReadDegrees(state);
+            angle.Text = $"Read {reading:0.00}° / Virtual {reading - (float)zeroOffset.Value:0.00}°";
         }
+
+        float ReadDegrees(InputState state) => Math.Max(-1f, Math.Min(1f, state.Axis(axis.SelectedIndex) / 10000f)) *
+            (float)rotation.Value / 2 * (invert.Checked ? -1 : 1);
 
         bool detecting;
         void StartDetect() { detecting = true; baseline = null; status.Text = "Turn the wheel to the right..."; detect.Enabled = false; }

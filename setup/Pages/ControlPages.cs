@@ -205,6 +205,10 @@ namespace NeoXR.Setup
                 Ui.Paragraph("Click a key box and press the key. F8 always recenters as well. " +
                              "In the game, the edit key lets you drag the wheel into place with the mouse."),
                 grid);
+            recenterKey.TextChanged += (s, e) => Edited();
+            editKey.TextChanged += (s, e) => Edited();
+            sensitivity.ValueChanged += (s, e) => Edited();
+            group.Changed += Edited;
         }
 
         protected override void Entering()

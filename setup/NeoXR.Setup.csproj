@@ -8,7 +8,8 @@
     <RootNamespace>NeoXR.Setup</RootNamespace>
     <LangVersion>latest</LangVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.2.1</Version>
+    <Version>0.3.0</Version>
+    <ApplicationIcon>NeoXR.ico</ApplicationIcon>
     <Product>NeoXR</Product>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>

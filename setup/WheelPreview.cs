@@ -16,7 +16,7 @@ namespace NeoXR.Setup
         const float DefaultYaw = 0, DefaultPitch = 0.2f, MaxPitch = 1.3f, RadiansPerPixel = 0.01f;
 
         readonly Settings settings;
-        readonly string draft = Path.Combine(Path.GetTempPath(), "NeoXR-Setup", "NeoXR.ini");
+        readonly string draft = Path.Combine(Path.GetTempPath(), "NeoXR-Setup", Guid.NewGuid().ToString("N") + ".ini");
         IntPtr preview;
         int configuredVersion = -1;
         string error;
@@ -57,7 +57,7 @@ namespace NeoXR.Setup
                 preview = neo_preview_create(Handle, Path.GetDirectoryName(Path.GetFullPath(settings.Path)), draft, ColorTranslator.ToWin32(Backdrop));
                 if (preview == IntPtr.Zero) Fail();
             }
-            catch (Exception ex) when (ex is DllNotFoundException || ex is EntryPointNotFoundException || ex is IOException || ex is UnauthorizedAccessException)
+            catch (Exception ex) when (ex is DllNotFoundException || ex is BadImageFormatException || ex is EntryPointNotFoundException || ex is IOException || ex is UnauthorizedAccessException || ex is System.ComponentModel.Win32Exception)
             {
                 error = ex.Message;
             }

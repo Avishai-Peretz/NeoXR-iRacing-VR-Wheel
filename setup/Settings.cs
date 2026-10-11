@@ -25,6 +25,18 @@ namespace NeoXR.Setup
         /// <summary>Increases whenever the pending changes do, so views know when to refresh.</summary>
         public int Version { get; private set; }
 
+        public void Discard() { changes.Clear(); Version++; }
+        DateTime diskTime;
+        long diskSize = -1;
+        public bool ReloadIfChanged()
+        {
+            var file = new FileInfo(Path);
+            if (!file.Exists || (file.LastWriteTimeUtc == diskTime && file.Length == diskSize)) return false;
+            diskTime = file.LastWriteTimeUtc; diskSize = file.Length;
+            Version++; // Pending edits still win over external changes.
+            return true;
+        }
+
         public string Text(string key, string fallback = "") =>
             changes.TryGetValue(key, out var value) ? value : Saved(key, fallback);
         public int Integer(string key, int fallback) =>
@@ -48,9 +60,15 @@ namespace NeoXR.Setup
 
         public void Save()
         {
-            foreach (var change in changes)
-                if (!WritePrivateProfileString(Section, change.Key, change.Value, Path)) throw new Win32Exception();
+            if (changes.Count == 0) return;
+            string draft = Path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try {
+                WriteDraft(draft);
+                // One rename publishes a complete settings generation to the DLL's watcher.
+                if (File.Exists(Path)) File.Replace(draft, Path, null); else File.Move(draft, Path);
+            } finally { if (File.Exists(draft)) File.Delete(draft); }
             changes.Clear();
+            ReloadIfChanged();
             Version++;
         }
 
@@ -61,6 +79,7 @@ namespace NeoXR.Setup
             File.WriteAllBytes(path, File.Exists(Path) ? File.ReadAllBytes(Path) : new byte[0]);
             foreach (var change in changes)
                 if (!WritePrivateProfileString(Section, change.Key, change.Value, path)) throw new Win32Exception();
+            WritePrivateProfileString(null, null, null, path); // Flush the INI cache before rename.
         }
 
         string Saved(string key, string fallback = "")

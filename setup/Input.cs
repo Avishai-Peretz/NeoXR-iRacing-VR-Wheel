@@ -32,6 +32,7 @@ namespace NeoXR.Setup
         public static List<string> List()
         {
             var names = new List<string>();
+            try {
             int count = neo_device_name(-1, null, 0);
             for (int i = 0; i < count; i++)
             {
@@ -39,13 +40,16 @@ namespace NeoXR.Setup
                 neo_device_name(i, name, name.Capacity);
                 names.Add(name.ToString());
             }
+            } catch (Exception ex) when (ex is DllNotFoundException || ex is BadImageFormatException || ex is EntryPointNotFoundException) { }
             return names;
         }
 
         public static InputDevice Open(int index)
         {
+            try {
             var handle = index >= 0 ? neo_open(index) : IntPtr.Zero;
             return handle == IntPtr.Zero ? null : new InputDevice(handle);
+            } catch (Exception ex) when (ex is DllNotFoundException || ex is BadImageFormatException || ex is EntryPointNotFoundException) { return null; }
         }
 
         public InputState Poll() => neo_poll(handle, out var state) != 0 ? new InputState(state) : null;

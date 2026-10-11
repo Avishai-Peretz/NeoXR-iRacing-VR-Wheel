@@ -14,9 +14,7 @@ namespace NeoXR.Setup
             Application.SetCompatibleTextRenderingDefault(false);
             string ini = args.Length > 0 ? Path.GetFullPath(args[0]) : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "NeoXR.ini");
             if (!File.Exists(ini)) return Fail("NeoXR.ini was not found:\n" + ini);
-            try { InputDevice.List(); }
-            catch (DllNotFoundException) { return Fail("NeoXR-InputBridge.dll is missing. Reinstall NeoXR."); }
-            using (var wizard = new WizardForm(new Settings(ini))) Application.Run(wizard);
+            using (var center = new ControlCenterForm(new Settings(ini))) Application.Run(center);
             return 0;
         }
 
