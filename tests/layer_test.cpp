@@ -4,6 +4,8 @@
 #include <iostream>
 #include "config.hpp"
 #include "controls.hpp"
+#include "edit.hpp"
+#include "iracing.hpp"
 #include "placement.hpp"
 #ifdef NDEBUG
 #undef NDEBUG
@@ -89,13 +91,82 @@ void levellingKeepsHeadingInARolledGameSpace(){
  for(int r=0;r<4;r++)for(int c=0;c<4;c++)assert(approx(got.m[r][c],want.m[r][c]));
 }
 
+void configSectionsAreSeparate(){
+ auto folder=std::filesystem::temp_directory_path()/L"NeoXR-LayerTest-Sections";
+ std::filesystem::create_directories(folder);std::filesystem::remove(folder/L"NeoXR.ini");
+ neo::Config wheel(folder);auto cars=wheel.section(L"Cars");
+ wheel.write(L"X",L"1");cars.write(L"X",L"2");
+ assert(wheel.text(L"X")==L"1"&&cars.text(L"X")==L"2");
+ cars.erase(L"X");assert(cars.text(L"X").empty()&&wheel.text(L"X")==L"1");
+ std::filesystem::remove_all(folder);
+}
+
+void sessionInfoNamesThePlayersCar(){
+ const std::string yaml=
+  "WeekendInfo:\n TrackName: spa\nDriverInfo:\n DriverCarIdx: 2\n DriverUserID: 7\n Drivers:\n"
+  " - CarIdx: 0\n   UserName: Pace Car\n   CarPath: safety pcfordmustang\n"
+  " - CarIdx: 12\n   CarPath: wrong\n"
+  " - CarIdx: 2\n   UserName: Driver\n   CarPath: dallarap217 \r\n   CarID: 128\n";
+ assert(neo::playerCarPath(yaml)=="dallarap217");                  // not CarIdx 12, trailing space trimmed
+ assert(neo::playerCarPath("DriverInfo:\n Drivers:\n")=="");
+ assert(neo::playerCarPath(" DriverCarIdx: 5\n - CarIdx: 5\n - CarIdx: 6\n   CarPath: x\n")==""); // CarPath belongs to car 6
+ assert(neo::carKey("safety pcfordmustang")==L"safety_pcfordmustang");
+}
+
+void carAlignmentRoundTripsAndRejectsBadInput(){
+ neo::Placement p;p.x=.012f;p.y=-.28f;p.z=-.47f;p.tiltDegrees=12.5f;p.yawDegrees=-3;p.width=.3f;
+ XMMATRIX head=XMMatrixRotationY(.4f)*XMMatrixTranslation(.1f,1.1f,-.2f);
+ auto parsed=neo::parseAlignment(neo::formatAlignment(p,head));
+ assert(parsed&&approx(parsed->placement.x,.012f)&&approx(parsed->placement.tiltDegrees,12.5f)&&approx(parsed->placement.width,.3f));
+ XMFLOAT4X4 expected;XMStoreFloat4x4(&expected,head);
+ for(int r=0;r<4;r++)for(int c=0;c<4;c++)assert(approx(parsed->head.m[r][c],expected.m[r][c]));
+ assert(!neo::parseAlignment(L""));
+ assert(!neo::parseAlignment(L"0,0,0,0,0,310"));                       // no calibration
+ assert(!neo::parseAlignment(L"0,0,0,0,0|0,0,0,0,0,0,1"));             // five placement values
+ assert(approx(neo::parseAlignment(L"0,0,-9,0,0,310|0,0,0,0,0,0,1")->placement.z,-1.5f)); // clamped
+}
+
+void editKeysIgnoreRepeatsAndTrackUnfocusedReleases(){
+ EditMode edit;
+ assert(edit.keyEvent(VK_TAB,true,true)&&edit.mode==EditMode::Move);
+ for(int i=0;i<20;i++)assert(edit.keyEvent(VK_TAB,true,true)&&edit.mode==EditMode::Move);
+ edit.keyEvent(VK_TAB,false,true);
+ edit.keyEvent('M',true,true);
+ assert(edit.mode==EditMode::Adjust);
+ for(int i=0;i<20;i++)assert(edit.keyEvent('M',true,true)&&edit.mode==EditMode::Adjust);
+ assert(!edit.keyEvent('M',false,false)); // release while another app has focus
+ edit.keyEvent('M',true,true);
+ assert(edit.mode==EditMode::Move);
+ edit.keyEvent('H',true,true);assert(edit.passthrough.exchange(false));
+ edit.keyEvent('H',true,true);assert(!edit.passthrough);
+ edit.keyEvent(VK_ESCAPE,true,true);
+ assert(edit.mode==EditMode::Confirm);
+ for(int i=0;i<20;i++){edit.keyEvent(VK_ESCAPE,true,true);assert(edit.mode==EditMode::Confirm);}
+ edit.keyEvent(VK_ESCAPE,false,true);edit.keyEvent(VK_ESCAPE,true,true);
+ assert(edit.mode==EditMode::Off&&edit.result==EditMode::Cancel);
+}
+
 int main(){
+ {
+  neo::Placement before,after=before,car;car.x=.162f;car.tiltDegrees=.9f;car.yawDegrees=-16.1f;car.width=.331f;
+  after.tiltDegrees=15;
+  assert(neo::applyPlacementChanges(car,before,after));assert(car.tiltDegrees==15);
+  assert(approx(car.x,.162f)&&approx(car.yawDegrees,-16.1f)&&approx(car.width,.331f));
+  assert(!neo::applyPlacementChanges(car,after,after)); // unrelated settings reload keeps saved car tilt
+  neo::Placement rotation;rotation.tiltDegrees=90;
+  XMFLOAT3 normal;XMStoreFloat3(&normal,XMVector3TransformNormal(XMVectorSet(0,0,1,0),rotation.rotation()));
+  assert(approx(normal.y,-1)&&approx(normal.z,0));
+ }
+ editKeysIgnoreRepeatsAndTrackUnfocusedReleases();
  configReadsClampsAndResolvesPaths();
+ configSectionsAreSeparate();
+ sessionInfoNamesThePlayersCar();
+ carAlignmentRoundTripsAndRejectsBadInput();
  keysParseNamesFunctionKeysAndLetters();
  edgeTriggerFiresOncePerPress();
  mappingReadsButtonsKnobsSticksAndClutch();
  dragMovesAdjustsAndClamps();
  calibrationRoundTripsAndRejectsBadInput();
  levellingKeepsHeadingInARolledGameSpace();
- std::cout<<"PASS: config, keys, edge triggers, control mapping, mouse placement, calibration and levelling\n";
+ std::cout<<"PASS: config, keys, edge triggers, control mapping, mouse placement, calibration, levelling and per-car alignment\n";
 }

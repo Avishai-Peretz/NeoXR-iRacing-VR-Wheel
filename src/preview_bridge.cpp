@@ -9,6 +9,7 @@
 #include <string>
 #include "bridge.hpp"
 #include "wheel.hpp"
+#include "placement.hpp"
 
 // C API for the setup wizard's live wheel preview: the layer's own WheelRig drawn into a window,
 // so every binding the user makes animates the wheel exactly as it will in VR.
@@ -29,10 +30,13 @@ public:
   createDevice();
   createSwapchain(window);
   rig_.init(device_.Get(),width_,height_,neo::Config(folder_,settings));
+  loadOrientation(neo::Config(folder_,settings));
   rig_.renderer.background={linear(GetRValue(background)),linear(GetGValue(background)),linear(GetBValue(background)),1};
  }
 
- void configure(const std::filesystem::path& settings){rig_.configure(neo::Config(folder_,settings));}
+ void configure(const std::filesystem::path& settings){
+  neo::Config config(folder_,settings);rig_.configure(config);loadOrientation(config);
+ }
 
  void resize(UINT width,UINT height){
   width=std::max(1u,width);height=std::max(1u,height);
@@ -40,13 +44,14 @@ public:
   ComPtr<ID3D11DeviceContext> context;device_->GetImmediateContext(&context);
   context->ClearState();context->Flush();
   hr(swapchain_->ResizeBuffers(0,width,height,DXGI_FORMAT_UNKNOWN,0));
-  rig_.renderer.resize(width,height);
+  rig_.resize(width,height);
   width_=width;height_=height;
  }
 
  // Steering or buttons may be null when that device is unavailable. `highlight` is a control slot to
  // point out, or -1. `yaw` and `pitch` orbit the camera around the wheel, in radians.
  void frame(const NeoInputState* steering,const NeoInputState* buttons,int highlight,float yaw,float pitch){
+  std::string reload;rig_.pollModel(reload);
   float dt=tick();time_+=dt;
   DIJOYSTATE2 pad{};if(buttons)pad=fromBridge(*buttons);
   auto poses=rig_.animate(buttons?&pad:nullptr,dt);
@@ -54,7 +59,7 @@ public:
   for(int i=0;i<neo::controlCount;i++)rig_.renderer.highlight[i]=i==highlight?pulse:0;
 
   float turn=steering?rig_.steering(fromBridge(*steering)):0;
-  XMMATRIX model=XMMatrixRotationZ(-turn);
+  XMMATRIX model=XMMatrixRotationZ(-turn)*orientation_.rotation();rig_.renderer.turn=turn;
   float aspect=float(width_)/float(height_),size=rig_.renderer.modelWidth;
   float tanV=std::tan(verticalFov/2),tanH=tanV*aspect;
   float distance=std::max(fitWidth*size/tanH,fitHeight*size/tanV);
@@ -70,6 +75,11 @@ public:
  }
 
 private:
+ neo::Placement orientation_;
+ void loadOrientation(const neo::Config& settings){
+  orientation_.tiltDegrees=settings.real(L"TiltDegrees",0,-90,90);
+  orientation_.yawDegrees=settings.real(L"YawDegrees",0,-90,90);
+ }
  void createDevice(){
   // WARP keeps the preview working on machines whose GPU driver refuses a second device.
   for(D3D_DRIVER_TYPE type:{D3D_DRIVER_TYPE_HARDWARE,D3D_DRIVER_TYPE_WARP})

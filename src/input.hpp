@@ -27,8 +27,12 @@ struct WheelInput {
      reinterpret_cast<void**>(api.GetAddressOf()),nullptr)))return false;
   return SUCCEEDED(api->EnumDevices(DI8DEVCLASS_GAMECTRL,enumerate,this,DIEDFL_ATTACHEDONLY));
  }
- bool open(int index){if(!list()||index<0||size_t(index)>=devices.size())return false;
-  if(FAILED(api->CreateDevice(devices[index].guidInstance,&device,nullptr)))return false;
+ int index=-1;
+ // Drops the device and opens the same index again, e.g. after it was unplugged or lost.
+ bool reopen(){if(device)device->Unacquire();device.Reset();if(window)DestroyWindow(window);window=nullptr;return index>=0&&open(index);}
+ bool open(int which){if(device)device->Unacquire();device.Reset();api.Reset();if(window)DestroyWindow(window);window=nullptr;valid=false;state={};
+  index=which;if(!list()||which<0||size_t(which)>=devices.size())return false;
+  if(FAILED(api->CreateDevice(devices[which].guidInstance,&device,nullptr)))return false;
   if(FAILED(device->SetDataFormat(&c_dfDIJoystick2)))return false;
   window=CreateWindowExW(0,L"STATIC",L"NeoXR Input",WS_OVERLAPPED,0,0,1,1,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
   if(!window||FAILED(device->SetCooperativeLevel(window,DISCL_BACKGROUND|DISCL_NONEXCLUSIVE)))return false;

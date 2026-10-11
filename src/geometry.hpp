@@ -5,9 +5,9 @@
 namespace neo {
 constexpr float pi=3.14159265358979323846f;
 struct Vertex { float x,y,z,r,g,b,button; };
-inline float steering(long value,float degrees,bool invert) {
+inline float steering(long value,float degrees,bool invert,float zeroOffsetDegrees=0) {
     float t=std::clamp(float(value)/10000.f,-1.f,1.f);
-    return t*degrees*.5f*pi/180.f*(invert?-1.f:1.f);
+    return (t*degrees*.5f*(invert?-1.f:1.f)-zeroOffsetDegrees)*pi/180.f;
 }
 inline void box(std::vector<Vertex>& v,float x,float y,float z,float w,float h,float d,
                 float r,float g,float b,int button=-1) {

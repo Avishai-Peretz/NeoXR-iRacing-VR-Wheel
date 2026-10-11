@@ -9,6 +9,10 @@ int main(){
  assert(std::abs(neo::steering(10000,900,false)-2.5f*neo::pi)<1e-5f);
  assert(neo::steering(0,900,false)==0);
  assert(neo::steering(-20000,900,true)==neo::steering(10000,900,false));
+ assert(std::abs(neo::steering(100,600,false,3))<1e-6f);
+ assert(std::abs(neo::steering(-100,600,true,3))<1e-6f);
+ assert(std::abs(neo::steering(0,900,false,3)+3*neo::pi/180)<1e-6f);
+ assert(std::abs(neo::steering(100,600,false,-3)-6*neo::pi/180)<1e-6f);
  auto v=neo::wheel(); assert(v.size()%3==0); float lo=1,hi=-1;bool buttons[8]={};
  for(auto a:v){assert(std::isfinite(a.x)&&std::isfinite(a.y)&&std::isfinite(a.z));
  lo=std::min(lo,a.x); hi=std::max(hi,a.x);if(a.button>=0) buttons[int(a.button)]=true;}

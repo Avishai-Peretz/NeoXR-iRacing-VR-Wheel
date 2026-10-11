@@ -24,11 +24,23 @@ struct Placement {
   return p;
  }
  // Pitch about the wheel's own axis first, then heading, then the offset from the head.
+ DirectX::XMMATRIX rotation() const {
+  return DirectX::XMMatrixRotationX(tiltDegrees*pi/180)*DirectX::XMMatrixRotationY(yawDegrees*pi/180);
+ }
  DirectX::XMMATRIX relativeToHead() const {
   using namespace DirectX;
-  return XMMatrixRotationX(tiltDegrees*pi/180)*XMMatrixRotationY(yawDegrees*pi/180)*XMMatrixTranslation(x,y,z);
+  return rotation()*XMMatrixTranslation(x,y,z);
  }
 };
+
+// Apply only fields edited in the desktop app, preserving the car's other alignment values.
+inline bool applyPlacementChanges(Placement& car,const Placement& previous,const Placement& next){
+ bool changed=false;
+ auto update=[&](float& target,float before,float after){if(before!=after){target=after;changed=true;}};
+ update(car.x,previous.x,next.x);update(car.y,previous.y,next.y);update(car.z,previous.z,next.z);
+ update(car.tiltDegrees,previous.tiltDegrees,next.tiltDegrees);update(car.yawDegrees,previous.yawDegrees,next.yawDegrees);
+ update(car.width,previous.width,next.width);car=car.clamped();return changed;
+}
 
 // Mouse motion collected since the last frame, in screen pixels and wheel notches.
 struct Drag {float leftX=0,leftY=0,rightX=0,rightY=0,scrollNotches=0;};
@@ -39,7 +51,8 @@ constexpr float metresPerPixel=.0005f,metresPerNotch=.01f;
 constexpr float widthPerPixel=.0002f,widthPerNotch=.005f,degreesPerPixel=.1f;
 
 // Move: left-drag slides in the head plane, right-drag or scroll changes distance.
-// Adjust: left-drag resizes, right-drag pitches (vertical) and turns (horizontal).
+// Adjust: left-drag resizes, right-drag pitches (vertical) or turns (horizontal); EditMode locks each
+// right-drag to one of the two.
 inline Placement dragged(Placement p,DragMode mode,const Drag& d,float sensitivity){
  if(mode==DragMode::Move){
   p.x+=d.leftX*metresPerPixel*sensitivity;
@@ -81,6 +94,25 @@ inline std::optional<DirectX::XMFLOAT4X4> parseCalibration(const std::wstring& t
  if(!std::isfinite(t.x+t.y+t.z+norm)||std::abs(norm-1)>=.01f)return std::nullopt;
  XMFLOAT4X4 head;XMStoreFloat4x4(&head,XMMatrixRotationQuaternion(XMLoadFloat4(&q))*XMMatrixTranslation(t.x,t.y,t.z));
  return head;
+}
+
+// A wheel lined up with one car's in-game wheel. Both halves are kept, so the wheel stays fixed in the
+// game's cockpit space even if the general calibration changes later.
+struct CarAlignment {Placement placement;DirectX::XMFLOAT4X4 head;};
+
+// [Cars] <car>=x,y,z,tiltDegrees,yawDegrees,widthMm|calibration
+inline std::wstring formatAlignment(const Placement& p,DirectX::FXMMATRIX head){
+ wchar_t text[96];swprintf_s(text,L"%.3f,%.3f,%.3f,%.1f,%.1f,%.0f|",p.x,p.y,p.z,p.tiltDegrees,p.yawDegrees,p.width*1000);
+ return text+formatCalibration(head);
+}
+inline std::optional<CarAlignment> parseAlignment(const std::wstring& text){
+ auto bar=text.find(L'|');if(bar==std::wstring::npos)return std::nullopt;
+ Placement p;float widthMm=0;
+ if(swscanf_s(text.substr(0,bar).c_str(),L"%f,%f,%f,%f,%f,%f",&p.x,&p.y,&p.z,&p.tiltDegrees,&p.yawDegrees,&widthMm)!=6)return std::nullopt;
+ if(!std::isfinite(p.x+p.y+p.z+p.tiltDegrees+p.yawDegrees+widthMm))return std::nullopt;
+ p.width=widthMm/1000;
+ auto head=parseCalibration(text.substr(bar+1));if(!head)return std::nullopt;
+ return CarAlignment{p.clamped(),*head};
 }
 
 }

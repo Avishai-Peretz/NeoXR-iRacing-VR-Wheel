@@ -7,6 +7,7 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include <openxr/openxr_loader_negotiation.h>
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -22,6 +23,8 @@
 #include "controls.hpp"
 #include "edit.hpp"
 #include "input.hpp"
+#include "iracing.hpp"
+#include "passthrough.hpp"
 #include "placement.hpp"
 #include "wheel.hpp"
 
@@ -39,12 +42,14 @@ std::filesystem::path folder;  // where NeoXR.dll, NeoXR.ini and NeoXR.log live
 bool targetProcess=false;      // true only inside the configured game executable
 std::recursive_mutex lock;
 PFN_xrGetInstanceProcAddr nextGipa=nullptr;
-XrInstance instance=XR_NULL_HANDLE;
+XrInstance instance=XR_NULL_HANDLE;         // the game's newest instance
+XrInstance overlayInstance=XR_NULL_HANDLE;  // the instance whose session has the wheel
+bool passthroughEnabled=false;              // NeoXR enabled passthrough on the newest instance
 
 #define FN_LIST(X) X(CreateSession) X(DestroySession) X(DestroyInstance) X(EndFrame) X(WaitFrame) X(BeginSession) \
  X(EnumerateSwapchainFormats) X(CreateSwapchain) X(DestroySwapchain) X(EnumerateSwapchainImages) \
  X(AcquireSwapchainImage) X(WaitSwapchainImage) X(ReleaseSwapchainImage) \
- X(CreateReferenceSpace) X(DestroySpace) X(LocateSpace) X(LocateViews) X(GetSystemProperties)
+ X(CreateReferenceSpace) X(DestroySpace) X(LocateSpace) X(LocateViews) X(GetSystemProperties) X(PollEvent)
 #define DECLARE_NEXT(name) PFN_xr##name next##name=nullptr;
 FN_LIST(DECLARE_NEXT)
 
@@ -52,7 +57,8 @@ neo::Config config(){return neo::Config(folder);}
 
 void log(const std::string& line){
  OutputDebugStringA(("NeoXR: "+line+"\n").c_str());
- try{std::ofstream(folder/L"NeoXR.log",std::ios::app)<<line<<'\n';}catch(...){}
+ SYSTEMTIME t;GetLocalTime(&t);char stamp[16];snprintf(stamp,sizeof stamp,"%02d:%02d:%02d.%03d ",t.wHour,t.wMinute,t.wSecond,t.wMilliseconds);
+ try{std::ofstream(folder/L"NeoXR.log",std::ios::app)<<stamp<<line<<'\n';}catch(...){}
 }
 template<class... Args> void logf(const char* format,Args... args){
  char line[256];snprintf(line,sizeof line,format,args...);log(line);
@@ -71,7 +77,7 @@ void check(XrResult result,const char* call){
 constexpr XrViewConfigurationType stereoViews=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
 // sRGB target: shader colors are linear and the runtime decodes them for compositing.
 constexpr int64_t swapchainFormat=DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-constexpr uint32_t maxEyeResolution=1024;
+constexpr uint32_t maxEyeResolution=1600;  // at least iRacing's 1424x1568 eye images, so fine detail such as carbon weave survives
 constexpr float nearPlane=.02f,farPlane=10.f;
 constexpr float nudgeMetres=.01f,nudgeDegrees=1.f;
 constexpr int maxLoggedSpaces=32;
@@ -179,12 +185,18 @@ private:
  void openInput(const neo::Config& settings);
  void loadPlacement(const neo::Config& settings);
  void loadRecentering(const neo::Config& settings);
+ void reloadSettings();
 
  // One frame, in order.
+ void noteSkip(const char* reason);
+ void pollInput();
  bool readRecenterAndToggleKeys();
  void trackGameSpace(XrSpace space);
+ void logGameDepth(const XrFrameEndInfo& frame);
+ void followCar();
  void applyNudges();
  void applyEdit();
+ void showRoom(bool on);
  std::optional<std::array<XrView,2>> locateViews(XrSpace space,XrTime time);
  void calibrate(const std::array<XrView,2>& views,XrSpace space,XrTime time,bool save);
  XMMATRIX wheelToGame() const;
@@ -192,7 +204,10 @@ private:
  XrResult submit(const XrFrameEndInfo& frame,XrSpace space,const std::array<XrCompositionLayerProjectionView,2>& views);
 
  void saveSetting(const wchar_t* key,const wchar_t* format,float value);
- void savePlacement();
+ void savePlacement(const neo::Placement& previous);
+ void useCarAlignment(const neo::CarAlignment& alignment);
+ void useGeneralPlacement();
+ void forgetCarAlignment();
  const WheelInput& buttonSource() const{return separateButtons_?buttons_:wheel_;}
 
  XrSession session_;
@@ -201,11 +216,13 @@ private:
  XrSpace gameSpace_=XR_NULL_HANDLE;
  UINT width_=maxEyeResolution,height_=maxEyeResolution;
  uint32_t maxLayers_=0;
- bool stereo_=false,shouldRender_=false,failed_=false,visible_=true;
+ bool stereo_=false,shouldRender_=false,failed_=false,visible_=true,loggedRenderAnyway_=false;
 
  neo::WheelRig rig_;
  WheelInput wheel_,buttons_;
- bool separateButtons_=false;
+ bool separateButtons_=false,wheelLost_=false,buttonsLost_=false;
+ ULONGLONG nextWheelReopen_=0,nextButtonsReopen_=0;
+ const char* skipReason_=nullptr;  // why the last frame had no wheel, or null if it had one
  FrameClock clock_;
 
  neo::Placement placement_,placementBeforeEdit_;
@@ -217,7 +234,22 @@ private:
 
  EditMode edit_;
  int previousEditMode_=EditMode::Off;
- float editSensitivity_=1;
+ float editSensitivity_=1,editOpacity_=.5f;
+
+ // While the current car has a saved alignment, placement_ and head_ hold it and the general
+ // placement waits here, so leaving the car or forgetting its alignment restores it.
+ neo::IracingTelemetry telemetry_;
+ std::wstring car_;
+ bool carAligned_=false,generalAnchored_=false,depthLogged_=false;
+ neo::Placement generalPlacement_;
+ XMFLOAT4X4 generalHead_{};
+ ULONGLONG nextCarCheck_=0;
+
+ neo::Passthrough room_;
+ bool enabled_=false,allowPassthrough_=true;
+ ULONGLONG nextSettingsCheck_=0;
+ neo::FileStamp settingsStamp_{},candidateStamp_{};
+ std::wstring calibrationText_;
 };
 
 Overlay::Overlay(XrSession session,const XrSessionCreateInfo& info):session_(session){
@@ -231,7 +263,11 @@ Overlay::Overlay(XrSession session,const XrSessionCreateInfo& info):session_(ses
  loadRecentering(settings);
  int editKey=neo::parseKey(settings.text(L"EditKey",L"Tab"));
  editSensitivity_=settings.real(L"EditSensitivity",1,.1f,10.f);
- if(editKey)edit_.start(module,editKey);
+ editOpacity_=settings.real(L"EditOpacity",.5f,.1f,1.f);
+ enabled_=settings.flag(L"Enabled",false);allowPassthrough_=settings.flag(L"Passthrough",true);
+ settingsStamp_=candidateStamp_=neo::fileStamp(folder/L"NeoXR.ini");calibrationText_=settings.text(L"Calibration");
+ edit_.start(module,enabled_?editKey:0);
+ if(passthroughEnabled)room_.init(nextGipa,instance,session_,[](const std::string& line){log(line);});
  log("D3D11 stereo renderer and input initialized; F8 calibrates, F9 toggles, EditKey places the wheel with the mouse");
 }
 
@@ -261,20 +297,57 @@ void Overlay::createSwapchains(XrSystemId system){
 
 void Overlay::createRenderer(ID3D11Device* device,const neo::Config& settings){
  rig_.init(device,width_,height_,settings);
- log(rig_.renderer.detailed?"Custom wheel loaded: 23 parts with baked material textures":"Procedural placeholder selected");
+ log("Model watcher started; native FBX / OBJ / glTF import runs in the background");
 }
 
 void Overlay::loadPlacement(const neo::Config& settings){
  placement_.x=settings.real(L"X",0);placement_.y=settings.real(L"Y",-.3f);placement_.z=settings.real(L"Z",-.5f);
  placement_.tiltDegrees=settings.real(L"TiltDegrees",0);placement_.yawDegrees=settings.real(L"YawDegrees",0);
- placement_.width=settings.real(L"WidthMm",310)/1000.f;
+ placement_.width=settings.real(L"WidthMm",316)/1000.f;
  placement_=placement_.clamped();
 }
 
 void Overlay::openInput(const neo::Config& settings){
- if(!wheel_.open(settings.integer(L"SteeringDevice",-1)))throw std::runtime_error("Configure SteeringDevice using NeoXR-Input first");
+ wheel_.open(settings.integer(L"SteeringDevice",-1));
  int buttonDevice=settings.integer(L"ButtonDevice",-1);separateButtons_=buttonDevice>=0;
- if(separateButtons_&&!buttons_.open(buttonDevice))throw std::runtime_error("ButtonDevice cannot be opened");
+ buttons_.open(buttonDevice);
+}
+
+void Overlay::reloadSettings(){
+ ULONGLONG now=GetTickCount64();if(now<nextSettingsCheck_)return;nextSettingsCheck_=now+300;
+ auto stamp=neo::fileStamp(folder/L"NeoXR.ini");
+ if(!stamp.exists||stamp==settingsStamp_)return;
+ if(stamp!=candidateStamp_){candidateStamp_=stamp;return;}
+ // Never replace an in-progress mouse alignment with file values.
+ if(edit_.mode!=EditMode::Off)return;
+ try{
+  const auto settings=config();rig_.configure(settings);
+  enabled_=settings.flag(L"Enabled",false);allowPassthrough_=settings.flag(L"Passthrough",true);
+  if(!enabled_||!allowPassthrough_)room_.show(false);
+  edit_.toggleKey=enabled_?neo::parseKey(settings.text(L"EditKey",L"Tab")):0;
+  editSensitivity_=settings.real(L"EditSensitivity",1,.1f,10.f);editOpacity_=settings.real(L"EditOpacity",.5f,.1f,1.f);
+  recenterKey_=neo::parseKey(settings.text(L"RecenterKey"));recenterButton_=settings.integer(L"RecenterButton",-1);
+  int steering=settings.integer(L"SteeringDevice",-1),buttons=settings.integer(L"ButtonDevice",-1);
+  if(steering!=wheel_.index)wheel_.open(steering);
+  if(buttons!=buttons_.index)buttons_.open(buttons);
+  separateButtons_=buttons>=0;
+  const auto previousGeneral=carAligned_?generalPlacement_:placement_;
+  useGeneralPlacement();loadPlacement(settings);
+  auto calibration=settings.text(L"Calibration");
+  if(calibration!=calibrationText_){
+   calibrationText_=calibration;
+   if(auto saved=neo::parseCalibration(calibration)){head_=*saved;hasSavedCalibration_=anchored_=true;}
+   else hasSavedCalibration_=anchored_=false;
+  }
+  if(!car_.empty())if(auto saved=neo::parseAlignment(settings.section(L"Cars").text(car_))){
+   if(neo::applyPlacementChanges(saved->placement,previousGeneral,placement_)){
+    settings.section(L"Cars").write(car_,neo::formatAlignment(saved->placement,XMLoadFloat4x4(&saved->head)));
+    log("Live placement changes applied to the current car alignment");
+   }
+   useCarAlignment(*saved);
+  }
+  settingsStamp_=neo::fileStamp(folder/L"NeoXR.ini");failed_=false;log("Settings reloaded live");
+ }catch(const std::exception& ex){settingsStamp_=stamp;log(std::string("Settings reload failed: ")+ex.what());}
 }
 
 void Overlay::loadRecentering(const neo::Config& settings){
@@ -290,34 +363,67 @@ void Overlay::loadRecentering(const neo::Config& settings){
 
 XrResult Overlay::endFrame(const XrFrameEndInfo& frame){
  auto passThrough=[&]{return nextEndFrame(session_,&frame);};
- if(failed_||!stereo_||!shouldRender_||!frame.layerCount||frame.layerCount>=maxLayers_)return passThrough();
+ auto skip=[&](const char* reason){noteSkip(reason);return passThrough();};
+ reloadSettings();
+ std::string reloadMessage;if(rig_.pollModel(reloadMessage))failed_=false;
+ if(!reloadMessage.empty())log(reloadMessage);
+ if(!enabled_)return skip("disabled in the app");
+ if(!rig_.ready)return skip("waiting for a valid wheel model");
+ if(failed_)return passThrough();
+ if(!stereo_)return skip("the session is not stereo");
+ // iRacing never ends its session after the headset comes off, so shouldRender stays false for good
+ // while it keeps submitting frames the runtime still shows; the wheel follows the game's layers instead.
+ if(!frame.layerCount)return skip(shouldRender_?"the game submitted no layers":"the runtime asked for no rendering (headset off or app hidden)");
+ if(!shouldRender_&&!loggedRenderAnyway_){log("Runtime asks for no rendering but the game keeps drawing; the wheel stays with the game");loggedRenderAnyway_=true;}
+ if(frame.layerCount>=maxLayers_)return skip("the game uses every compositor layer");
 
  bool recenter=readRecenterAndToggleKeys();
  XrSpace space=findGameSpace(frame);
- if(!space)return passThrough();
+ if(!space)return skip("the game submitted no projection layer");
  trackGameSpace(space);
+ logGameDepth(frame);
+ followCar();
  applyNudges();
  applyEdit();
- if(!visible_)return passThrough();
+ if(!visible_)return skip("hidden with F9");
 
  try{
-  if(!wheel_.poll())return passThrough();
-  if(separateButtons_)buttons_.poll();
+  pollInput();
   const WheelInput& buttons=buttonSource();
   recenter|=keys_.recenterButton.rising(buttons.valid&&buttonHeld(buttons.state,recenterButton_));
 
   auto views=locateViews(space,frame.displayTime);
-  if(!views)return passThrough();
+  if(!views)return skip("head tracking is not valid");
   if(!anchored_||recenter)calibrate(*views,space,frame.displayTime,recenter);
 
-  XMMATRIX model=wheelToGame();
+  XMMATRIX model=wheelToGame();rig_.renderer.turn=rig_.steering(wheel_.state);
   auto poses=rig_.animate(buttons.valid?&buttons.state:nullptr,clock_.tick());
   std::array<XrCompositionLayerProjectionView,2> projected{};
   for(int eye=0;eye<2;eye++)projected[eye]=renderEye(eye,(*views)[eye],model,poses);
+  noteSkip(nullptr);
   return submit(frame,space,projected);
  }catch(const std::exception& e){log(e.what());failed_=true;}
  catch(...){log("Render failed; overlay disabled");failed_=true;}
  return passThrough();
+}
+
+// Logs only changes, so a long pause is one line when it starts and one when the wheel returns.
+void Overlay::noteSkip(const char* reason){
+ if(reason==skipReason_)return;
+ if(reason)logf("Wheel not drawn: %s",reason);else if(skipReason_)log("Wheel drawn again");
+ skipReason_=reason;
+}
+
+// A lost device does not hide the wheel: it stays centred and is reopened every two seconds.
+void Overlay::pollInput(){
+ auto keep=[&](WheelInput& input,bool& lost,ULONGLONG& nextReopen,const char* name){
+  if(input.poll()){if(lost){logf("%s input is back",name);lost=false;}return;}
+  if(!lost){logf("%s input lost; the wheel stays centred while NeoXR reconnects",name);lost=true;}
+  ULONGLONG now=GetTickCount64();
+  if(now>=nextReopen){nextReopen=now+2000;input.reopen();}
+ };
+ keep(wheel_,wheelLost_,nextWheelReopen_,"Steering");
+ if(separateButtons_)keep(buttons_,buttonsLost_,nextButtonsReopen_,"Button");
 }
 
 bool Overlay::readRecenterAndToggleKeys(){
@@ -338,15 +444,59 @@ void Overlay::applyNudges(){
  bool chord=keyHeld(VK_CONTROL)&&keyHeld(VK_SHIFT);
  auto pressed=[&](neo::EdgeTrigger& edge,int key){return edge.rising(chord&&keyHeld(key));};
  bool closer=pressed(keys_.closer,VK_DOWN),farther=pressed(keys_.farther,VK_UP);
- if(closer||farther){
-  placement_.z+=closer?nudgeMetres:-nudgeMetres;placement_=placement_.clamped();
-  saveSetting(L"Z",L"%.2f",placement_.z);
- }
  bool up=pressed(keys_.tiltUp,VK_PRIOR),down=pressed(keys_.tiltDown,VK_NEXT);
- if(up||down){
-  placement_.tiltDegrees+=up?nudgeDegrees:-nudgeDegrees;placement_=placement_.clamped();
-  saveSetting(L"TiltDegrees",L"%.0f",placement_.tiltDegrees);
+ if(!closer&&!farther&&!up&&!down)return;
+ neo::Placement previous=placement_;
+ if(closer||farther)placement_.z+=closer?nudgeMetres:-nudgeMetres;
+ if(up||down)placement_.tiltDegrees+=up?nudgeDegrees:-nudgeDegrees;
+ placement_=placement_.clamped();savePlacement(previous);
+}
+
+// Polls iRacing about once a second for the player's car and switches to its saved alignment.
+void Overlay::followCar(){
+ ULONGLONG now=GetTickCount64();
+ if(now<nextCarCheck_||edit_.mode!=EditMode::Off)return;
+ nextCarCheck_=now+1000;
+ std::wstring car=telemetry_.car();
+ if(car==car_)return;
+ car_=car;
+ auto saved=car.empty()?std::nullopt:neo::parseAlignment(config().section(L"Cars").text(car));
+ if(saved){useCarAlignment(*saved);logf("Car %ls: using its saved alignment with the in-game wheel",car.c_str());return;}
+ useGeneralPlacement();
+ if(!car.empty())logf("Car %ls: no saved alignment; show the in-game wheel, line this one up with EditKey and save to keep it for this car",car.c_str());
+}
+
+void Overlay::useCarAlignment(const neo::CarAlignment& alignment){
+ if(!carAligned_){generalPlacement_=placement_;generalHead_=head_;generalAnchored_=anchored_;}
+ placement_=alignment.placement;XMStoreFloat4x4(&head_,XMLoadFloat4x4(&alignment.head));anchored_=carAligned_=true;
+}
+void Overlay::useGeneralPlacement(){
+ if(!carAligned_)return;
+ placement_=generalPlacement_;head_=generalHead_;anchored_=generalAnchored_;carAligned_=false;
+}
+void Overlay::forgetCarAlignment(){
+ if(!carAligned_){log("Edit mode: this car has no saved alignment to forget");return;}
+ config().section(L"Cars").erase(car_);useGeneralPlacement();
+ logf("Car %ls: alignment forgotten; using the general placement",car_.c_str());
+}
+
+// Diagnostics: whether the game hands its depth buffer to the runtime, which hand occlusion would need.
+void Overlay::logGameDepth(const XrFrameEndInfo& frame){
+ if(depthLogged_)return;
+ depthLogged_=true;
+ for(uint32_t i=0;i<frame.layerCount;i++){
+  if(!frame.layers[i]||frame.layers[i]->type!=XR_TYPE_COMPOSITION_LAYER_PROJECTION)continue;
+  const auto* projection=reinterpret_cast<const XrCompositionLayerProjection*>(frame.layers[i]);
+  logf("Game layer %u: projection, %u views, flags=0x%llx",i,projection->viewCount,(unsigned long long)projection->layerFlags);
+  for(auto* node=static_cast<const XrBaseInStructure*>(projection->viewCount?projection->views[0].next:nullptr);node;node=node->next){
+   if(node->type!=XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR){logf("Game view extension struct type=%d",int(node->type));continue;}
+   const auto* depth=reinterpret_cast<const XrCompositionLayerDepthInfoKHR*>(node);
+   logf("Game submits depth: near=%.3f far=%.3f range=%.2f..%.2f size=%dx%d",depth->nearZ,depth->farZ,depth->minDepth,depth->maxDepth,
+    depth->subImage.imageRect.extent.width,depth->subImage.imageRect.extent.height);
+   return;
+  }
  }
+ log("Game does not submit depth with its frames");
 }
 
 // Consumes the mouse motion gathered by the edit-mode hooks since the last frame.
@@ -354,17 +504,29 @@ void Overlay::applyEdit(){
  int mode=edit_.mode;
  if(mode!=EditMode::Off&&previousEditMode_==EditMode::Off){
   placementBeforeEdit_=placement_;
-  log("Edit mode: left-drag moves, right-drag sets distance, M switches to size/rotate, Esc then Enter saves");
+  log("Edit mode: left-drag moves, right-drag sets distance, M switches to size/rotate, H shows the room through the cameras, Esc then Enter saves, Esc then Delete forgets this car's alignment");
  }
  neo::Drag drag{float(edit_.leftX.exchange(0)),float(edit_.leftY.exchange(0)),float(edit_.rightX.exchange(0)),
   float(edit_.rightY.exchange(0)),float(edit_.scroll.exchange(0))/WHEEL_DELTA};
  if(mode==EditMode::Move)placement_=neo::dragged(placement_,neo::DragMode::Move,drag,editSensitivity_);
  else if(mode==EditMode::Adjust)placement_=neo::dragged(placement_,neo::DragMode::Adjust,drag,editSensitivity_);
  switch(edit_.result.exchange(EditMode::None)){
-  case EditMode::Save:savePlacement();log("Edit mode: placement saved");break;
+  case EditMode::Save:savePlacement(placementBeforeEdit_);break;
   case EditMode::Cancel:placement_=placementBeforeEdit_;log("Edit mode: cancelled, placement restored");break;
+  case EditMode::Forget:placement_=placementBeforeEdit_;forgetCarAlignment();break;
  }
+ if(edit_.passthrough.exchange(false)&&mode!=EditMode::Off)showRoom(!room_.showing());
+ if(mode==EditMode::Off&&room_.showing())showRoom(false);
  previousEditMode_=mode;rig_.renderer.editMode=mode;
+ rig_.renderer.opacity=mode==EditMode::Off?1:editOpacity_;
+}
+
+// The cameras' view replaces the game while editing, so the wheel can be lined up with the real one.
+void Overlay::showRoom(bool on){
+ if(on&&!allowPassthrough_){log("Passthrough is disabled in the app");return;}
+ if(on&&!passthroughEnabled){log("Passthrough: the runtime does not offer it; turn on Passthrough over Meta Quest Link in the Meta Horizon Link app's Beta settings");return;}
+ if(!room_.show(on))return;
+ log(on?"Passthrough on; the game is hidden until H or the end of edit mode":"Passthrough off");
 }
 
 std::optional<std::array<XrView,2>> Overlay::locateViews(XrSpace space,XrTime time){
@@ -386,8 +548,13 @@ void Overlay::calibrate(const std::array<XrView,2>& views,XrSpace space,XrTime t
  if(XR_SUCCEEDED(nextLocateSpace(levelSpace_.get(),space,time,&level))&&
     hasAll<XrSpaceLocationFlags>(level.locationFlags,XR_SPACE_LOCATION_ORIENTATION_VALID_BIT|XR_SPACE_LOCATION_POSITION_VALID_BIT))
   head=neo::levelHead(head,toMatrix(level.pose));
- XMStoreFloat4x4(&head_,head);anchored_=true;
- if(save){config().write(L"Calibration",neo::formatCalibration(head));hasSavedCalibration_=true;log("Calibration saved");}
+ // A car's alignment is fixed to its cockpit, so recentering only changes the general calibration.
+ if(carAligned_){XMStoreFloat4x4(&generalHead_,head);generalAnchored_=true;}
+ else{XMStoreFloat4x4(&head_,head);anchored_=true;}
+ if(save){
+  config().write(L"Calibration",neo::formatCalibration(head));hasSavedCalibration_=true;
+  log(carAligned_?"Calibration saved; this car keeps its alignment with the in-game wheel":"Calibration saved");
+ }
 }
 
 XMMATRIX Overlay::wheelToGame() const{
@@ -413,6 +580,8 @@ XrResult Overlay::submit(const XrFrameEndInfo& frame,XrSpace space,const std::ar
  XrCompositionLayerProjection wheel{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
  wheel.space=space;wheel.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;wheel.viewCount=2;wheel.views=views.data();
  std::vector<const XrCompositionLayerBaseHeader*> layers(frame.layers,frame.layers+frame.layerCount);
+ // Link composites passthrough reliably only as the bottom layer, so the room replaces the game's layers.
+ if(auto* room=room_.layer())layers={room};
  layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&wheel));
  XrFrameEndInfo withWheel=frame;withWheel.layerCount=uint32_t(layers.size());withWheel.layers=layers.data();
  // Never retry xrEndFrame: even a failed call can have consumed the frame.
@@ -426,7 +595,15 @@ void Overlay::saveSetting(const wchar_t* key,const wchar_t* format,float value){
  config().write(key,text);logf("%ls=%ls",key,text);
 }
 
-void Overlay::savePlacement(){
+// With a known car the placement is saved as that car's alignment, together with the calibration it
+// was made against; `previous` stays the general placement. Without iRacing it is the general one.
+void Overlay::savePlacement(const neo::Placement& previous){
+ if(!car_.empty()){
+  if(!carAligned_){generalPlacement_=previous;generalHead_=head_;generalAnchored_=anchored_;carAligned_=true;}
+  config().section(L"Cars").write(car_,neo::formatAlignment(placement_,XMLoadFloat4x4(&head_)));
+  logf("Car %ls: alignment saved",car_.c_str());
+  return;
+ }
  saveSetting(L"X",L"%.3f",placement_.x);saveSetting(L"Y",L"%.3f",placement_.y);saveSetting(L"Z",L"%.3f",placement_.z);
  saveSetting(L"TiltDegrees",L"%.1f",placement_.tiltDegrees);saveSetting(L"YawDegrees",L"%.1f",placement_.yawDegrees);
  saveSetting(L"WidthMm",L"%.0f",placement_.width*1000);
@@ -442,8 +619,12 @@ Overlay* overlayFor(XrSession session){return overlay&&overlay->session()==sessi
 XrResult XRAPI_CALL createSession(XrInstance i,const XrSessionCreateInfo* ci,XrSession* out){
  std::lock_guard<std::recursive_mutex> guard(lock);
  XrResult result=nextCreateSession(i,ci,out);
- if(XR_SUCCEEDED(result)&&targetProcess&&!overlay&&config().flag(L"Enabled",false)){
-  try{overlay=std::make_unique<Overlay>(*out,*ci);}
+ if(!targetProcess)return result;
+ if(XR_FAILED(result)){logf("Game's xrCreateSession failed, XrResult=%d",int(result));return result;}
+ log("Game created a session");
+ if(overlay){log("Game created a new session before ending the old one; moving the wheel to the new one");overlay.reset();}
+ {
+  try{overlay=std::make_unique<Overlay>(*out,*ci);overlayInstance=i;}
   catch(const std::exception& e){log(e.what());}
   catch(...){log("Initialization failed");}
  }
@@ -451,12 +632,15 @@ XrResult XRAPI_CALL createSession(XrInstance i,const XrSessionCreateInfo* ci,XrS
 }
 XrResult XRAPI_CALL destroySession(XrSession session){
  std::lock_guard<std::recursive_mutex> guard(lock);
- if(overlayFor(session))overlay.reset();
+ if(overlayFor(session)){overlay.reset();log("Game ended its session; wheel removed");}
  return nextDestroySession(session);
 }
 XrResult XRAPI_CALL destroyInstance(XrInstance i){
  std::lock_guard<std::recursive_mutex> guard(lock);
- overlay.reset();XrResult result=nextDestroyInstance(i);instance=XR_NULL_HANDLE;
+ if(targetProcess)log(i==instance?"Game closed its OpenXR instance":"Game closed an older OpenXR instance");
+ if(i==overlayInstance){overlay.reset();overlayInstance=XR_NULL_HANDLE;}
+ XrResult result=nextDestroyInstance(i);
+ if(i==instance)instance=XR_NULL_HANDLE;
  return result;
 }
 XrResult XRAPI_CALL beginSession(XrSession session,const XrSessionBeginInfo* info){
@@ -476,6 +660,21 @@ XrResult XRAPI_CALL endFrame(XrSession session,const XrFrameEndInfo* frame){
  if(auto* o=overlayFor(session))return o->endFrame(*frame);
  return nextEndFrame(session,frame);
 }
+// Diagnostics only: session state changes (headset off and on) and runtime recentering.
+XrResult XRAPI_CALL pollEvent(XrInstance i,XrEventDataBuffer* event){
+ XrResult result=nextPollEvent(i,event);
+ if(result!=XR_SUCCESS||!targetProcess||!event)return result;
+ if(event->type==XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+  logf("Session state %d",int(reinterpret_cast<const XrEventDataSessionStateChanged*>(event)->state));
+ else if(event->type==XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING){
+  const auto* change=reinterpret_cast<const XrEventDataReferenceSpaceChangePending*>(event);
+  const auto& p=change->poseInPreviousSpace.position;
+  logf("Runtime recentering reference space type=%d, pose valid=%d, moved=(%.3f,%.3f,%.3f)",int(change->referenceSpaceType),
+   int(change->poseValid),p.x,p.y,p.z);
+ }
+ return result;
+}
+
 // Diagnostics only: shows in NeoXR.log how the game sets up and recenters its tracking spaces.
 XrResult XRAPI_CALL createReferenceSpace(XrSession session,const XrReferenceSpaceCreateInfo* ci,XrSpace* out){
  XrResult result=nextCreateReferenceSpace(session,ci,out);
@@ -493,27 +692,71 @@ XrResult XRAPI_CALL gipa(XrInstance i,const char* name,PFN_xrVoidFunction* funct
  #define HOOK(n,fn) if(std::strcmp(name,"xr" #n)==0){*function=reinterpret_cast<PFN_xrVoidFunction>(fn);return XR_SUCCESS;}
  HOOK(GetInstanceProcAddr,gipa) HOOK(CreateSession,createSession) HOOK(DestroySession,destroySession)
  HOOK(DestroyInstance,destroyInstance) HOOK(EndFrame,endFrame) HOOK(WaitFrame,waitFrame) HOOK(BeginSession,beginSession)
- HOOK(CreateReferenceSpace,createReferenceSpace)
+ HOOK(CreateReferenceSpace,createReferenceSpace) HOOK(PollEvent,pollEvent)
  #undef HOOK
  return nextGipa(i,name,function);
 }
 
+std::vector<std::string> runtimeExtensions(PFN_xrGetInstanceProcAddr next){
+ PFN_xrEnumerateInstanceExtensionProperties enumerate=nullptr;
+ if(XR_FAILED(next(XR_NULL_HANDLE,"xrEnumerateInstanceExtensionProperties",reinterpret_cast<PFN_xrVoidFunction*>(&enumerate)))||!enumerate)return {};
+ uint32_t count=0;
+ if(XR_FAILED(enumerate(nullptr,0,&count,nullptr)))return {};
+ std::vector<XrExtensionProperties> extensions(count,{XR_TYPE_EXTENSION_PROPERTIES});
+ if(XR_FAILED(enumerate(nullptr,count,&count,extensions.data())))return {};
+ std::vector<std::string> names;
+ for(uint32_t e=0;e<count;e++)names.push_back(extensions[e].extensionName);
+ return names;
+}
+
+bool contains(const std::vector<std::string>& names,const char* name){return std::find(names.begin(),names.end(),name)!=names.end();}
+
 XrResult XRAPI_CALL createInstance(const XrInstanceCreateInfo* ci,const XrApiLayerCreateInfo* info,XrInstance* out){
- if(!info||!info->nextInfo)return XR_ERROR_INITIALIZATION_FAILED;
- if(instance!=XR_NULL_HANDLE)return XR_ERROR_LIMIT_REACHED;
- auto* next=info->nextInfo;nextGipa=next->nextGetInstanceProcAddr;
- auto chained=*info;chained.nextInfo=next->next;
- XrResult result=next->nextCreateApiLayerInstance(ci,&chained,out);
- if(XR_FAILED(result))return result;
- instance=*out;
- #define LOAD_NEXT(name) nextGipa(instance,"xr" #name,reinterpret_cast<PFN_xrVoidFunction*>(&next##name));
- FN_LIST(LOAD_NEXT)
- #undef LOAD_NEXT
+ if(!info||!info->nextInfo||!ci)return XR_ERROR_INITIALIZATION_FAILED;
+ std::lock_guard<std::recursive_mutex> guard(lock);
  wchar_t path[MAX_PATH]={};GetModuleFileNameW(module,path,MAX_PATH);folder=std::filesystem::path(path).parent_path();
  wchar_t exe[MAX_PATH]={};GetModuleFileNameW(nullptr,exe,MAX_PATH);
  std::wstring allowed=config().text(L"Process",L"iRacingSim64DX11.exe");
  targetProcess=_wcsicmp(std::filesystem::path(exe).filename().c_str(),allowed.c_str())==0;
- if(targetProcess)log("Layer loaded in configured process (NeoXR " NEOXR_VERSION ")");
+ auto* next=info->nextInfo;
+ auto chained=*info;chained.nextInfo=next->next;
+ std::vector<std::string> offered;
+ if(targetProcess){
+  log("Layer loaded in configured process (NeoXR " NEOXR_VERSION ")");
+  for(uint32_t e=0;e<ci->enabledExtensionCount;e++)logf("Game enabled extension %s",ci->enabledExtensionNames[e]);
+  offered=runtimeExtensions(next->nextGetInstanceProcAddr);
+  std::string line="Runtime offers "+std::to_string(offered.size())+" extensions:";
+  for(const auto& name:offered)line+=" "+name;
+  log(line);
+ }
+
+ // Passthrough needs an extension the game does not enable, so NeoXR adds it to its instance.
+ XrInstanceCreateInfo withPassthrough=*ci;std::vector<const char*> names(ci->enabledExtensionNames,ci->enabledExtensionNames+ci->enabledExtensionCount);
+ passthroughEnabled=false;
+ if(targetProcess){
+  passthroughEnabled=contains(offered,neo::Passthrough::extension);
+  if(!passthroughEnabled)log("Passthrough: the runtime does not offer it");
+  else if(std::none_of(names.begin(),names.end(),[](const char* n){return std::strcmp(n,neo::Passthrough::extension)==0;}))names.push_back(neo::Passthrough::extension);
+  withPassthrough.enabledExtensionCount=uint32_t(names.size());withPassthrough.enabledExtensionNames=names.data();
+ }
+ bool extended=withPassthrough.enabledExtensionCount>ci->enabledExtensionCount;
+
+ // A game may restart OpenXR (e.g. after the headset slept) before destroying its old instance.
+ // Refusing would fail the game's whole OpenXR start, so NeoXR follows the newest instance; the
+ // next functions dispatch on the handle, so the old one keeps working until it is destroyed.
+ bool replacing=instance!=XR_NULL_HANDLE;
+ XrResult result=next->nextCreateApiLayerInstance(extended?&withPassthrough:ci,&chained,out);
+ if(XR_FAILED(result)&&extended){
+  logf("The runtime refused the passthrough extension, XrResult=%d; starting without it",int(result));
+  passthroughEnabled=false;result=next->nextCreateApiLayerInstance(ci,&chained,out);
+ }
+ if(XR_FAILED(result)){if(targetProcess)logf("Game's xrCreateInstance failed further down the chain, XrResult=%d",int(result));return result;}
+ if(extended&&passthroughEnabled)log("Passthrough enabled; H in edit mode shows the room");
+ nextGipa=next->nextGetInstanceProcAddr;instance=*out;
+ if(replacing&&targetProcess)log("Game created a new OpenXR instance while the old one is still open; following the new one");
+ #define LOAD_NEXT(name) nextGipa(instance,"xr" #name,reinterpret_cast<PFN_xrVoidFunction*>(&next##name));
+ FN_LIST(LOAD_NEXT)
+ #undef LOAD_NEXT
  return result;
 }
 

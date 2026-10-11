@@ -17,8 +17,12 @@ public:
  // Reads `file` but still resolves relative paths against `folder`, e.g. for a draft copy of the settings.
  Config(std::filesystem::path folder,const std::filesystem::path& file):folder_(std::move(folder)),file_(file.wstring()) {}
 
+ // The same file, another section.
+ Config section(std::wstring name) const {Config other=*this;other.section_=std::move(name);return other;}
+ void erase(const std::wstring& key) const {WritePrivateProfileStringW(section_.c_str(),key.c_str(),nullptr,file_.c_str());}
+
  int integer(const std::wstring& key,int fallback) const {
-  return int(GetPrivateProfileIntW(section,key.c_str(),fallback,file_.c_str()));
+  return int(GetPrivateProfileIntW(section_.c_str(),key.c_str(),fallback,file_.c_str()));
  }
  bool flag(const std::wstring& key,bool fallback) const {return integer(key,fallback?1:0)!=0;}
 
@@ -38,7 +42,7 @@ public:
 
  std::wstring text(const std::wstring& key,const std::wstring& fallback=L"") const {
   wchar_t buffer[MAX_PATH]={};
-  GetPrivateProfileStringW(section,key.c_str(),fallback.c_str(),buffer,MAX_PATH,file_.c_str());
+  GetPrivateProfileStringW(section_.c_str(),key.c_str(),fallback.c_str(),buffer,MAX_PATH,file_.c_str());
   return buffer;
  }
  // Relative paths are resolved against the layer folder, so the package can be moved as a whole.
@@ -48,11 +52,11 @@ public:
  }
 
  void write(const std::wstring& key,const std::wstring& value) const {
-  WritePrivateProfileStringW(section,key.c_str(),value.c_str(),file_.c_str());
+  WritePrivateProfileStringW(section_.c_str(),key.c_str(),value.c_str(),file_.c_str());
  }
 
 private:
- static constexpr const wchar_t* section=L"Wheel";
+ std::wstring section_=L"Wheel";
  std::filesystem::path folder_;
  std::wstring file_;
 };
